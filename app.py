@@ -39,6 +39,10 @@ def _inject_ai_provider():
     # 让所有模板都能显示"当前用的是哪个串联引擎"
     return {"ai_provider": ai.provider_label()}
 
+# 评价文案（好评/差评各 5 条，前端每条接龙随机展示一条）
+GOOD_REVIEWS = ["神来一笔", "妙笔生花", "封神操作", "脑洞清奇", "全场最佳"]
+BAD_REVIEWS = ["注水文", "强行尬接", "逻辑崩坏", "跑题预警", "平平无奇"]
+
 # 接龙失败原因 -> 用户提示
 RELAY_ERRORS = {
     "not_found": "故事不存在",
@@ -114,6 +118,10 @@ def story_detail(story_id):
         abort(404)
     blocks = db.get_blocks(story_id)
     user = current_user()
+    counts, mine = db.get_ratings(story_id, user["id"] if user else None)
+    for b in blocks:  # 把每条接龙的好评/差评数与"我的投票"挂到 block 上
+        c = counts.get(b["id"], {"good": 0, "bad": 0})
+        b["good"], b["bad"], b["mine"] = c["good"], c["bad"], mine.get(b["id"])
     tail = blocks[-1] if blocks else None
     is_creator = bool(user and user["id"] == story["creator_id"])
     consecutive = bool(user and tail and tail["author_id"] == user["id"])
@@ -122,6 +130,7 @@ def story_detail(story_id):
         story=story, blocks=blocks, user=user,
         is_creator=is_creator, consecutive=consecutive,
         max_blocks=db.MAX_BLOCKS, relay_max=db.MAX_RELAY,
+        good_reviews=GOOD_REVIEWS, bad_reviews=BAD_REVIEWS,
     )
 
 
@@ -201,6 +210,28 @@ def finish(story_id):
     res = db.finish_story(story_id, user["id"])
     flash("故事已完结" if res["ok"] else res.get("msg", "操作失败"))
     return redirect(url_for("story_detail", story_id=story_id))
+
+
+# ---------- 接龙评价（好评 / 差评，AJAX） ----------
+
+@app.route("/block/<int:block_id>/rate", methods=["POST"])
+def rate(block_id):
+    user = current_user()
+    if not user:
+        return {"ok": False, "error": "login"}, 401
+    kind = request.form.get("kind")
+    if kind not in ("good", "bad"):
+        return {"ok": False, "error": "bad_kind"}, 400
+    res = db.rate_block(block_id, user["id"], kind)
+    if not res["ok"]:
+        return {"ok": False, "error": res["error"]}, 404
+    counts = db.get_block_counts(block_id)
+    return {
+        "ok": True,
+        "good": counts["good"],
+        "bad": counts["bad"],
+        "mine": db.get_user_vote(block_id, user["id"]),
+    }
 
 
 # ---------- 启动：建表 + 首次种子数据 ----------

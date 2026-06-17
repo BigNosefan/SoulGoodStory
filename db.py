@@ -59,6 +59,15 @@ def init_db():
             created_at  TEXT NOT NULL,
             UNIQUE(story_id, sequence)
         );
+
+        CREATE TABLE IF NOT EXISTS ratings (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            block_id   INTEGER NOT NULL REFERENCES blocks(id),
+            user_id    INTEGER NOT NULL REFERENCES users(id),
+            kind       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(block_id, user_id)
+        );
         """
     )
     # 兼容旧库：补 ai_status 列（旧版本建的表没有该列）
@@ -254,3 +263,78 @@ def add_block(story_id, expected_sequence, content, author_id):
         return {"ok": False, "error": "conflict"}
     finally:
         conn.close()
+
+
+# ---------- 评价（好评 / 差评） ----------
+
+def rate_block(block_id, user_id, kind):
+    """好评/差评。再次点同一类型 = 取消(toggle)；点另一类型 = 切换。"""
+    conn = get_db()
+    cur = conn.cursor()
+    if cur.execute("SELECT id FROM blocks WHERE id = ?", (block_id,)).fetchone() is None:
+        conn.close()
+        return {"ok": False, "error": "not_found"}
+    existing = cur.execute(
+        "SELECT kind FROM ratings WHERE block_id = ? AND user_id = ?", (block_id, user_id)
+    ).fetchone()
+    if existing is None:
+        cur.execute(
+            "INSERT INTO ratings (block_id, user_id, kind, created_at) VALUES (?, ?, ?, ?)",
+            (block_id, user_id, kind, _now()),
+        )
+    elif existing["kind"] == kind:
+        cur.execute("DELETE FROM ratings WHERE block_id = ? AND user_id = ?", (block_id, user_id))
+    else:
+        cur.execute(
+            "UPDATE ratings SET kind = ?, created_at = ? WHERE block_id = ? AND user_id = ?",
+            (kind, _now(), block_id, user_id),
+        )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+def get_block_counts(block_id):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT SUM(kind = 'good') AS good, SUM(kind = 'bad') AS bad FROM ratings WHERE block_id = ?",
+        (block_id,),
+    ).fetchone()
+    conn.close()
+    return {"good": row["good"] or 0, "bad": row["bad"] or 0}
+
+
+def get_user_vote(block_id, user_id):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT kind FROM ratings WHERE block_id = ? AND user_id = ?", (block_id, user_id)
+    ).fetchone()
+    conn.close()
+    return row["kind"] if row else None
+
+
+def get_ratings(story_id, user_id=None):
+    """返回 (counts, mine)：counts[block_id]={good,bad}；mine[block_id]=kind。"""
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT b.id AS block_id,
+               SUM(CASE WHEN r.kind = 'good' THEN 1 ELSE 0 END) AS good,
+               SUM(CASE WHEN r.kind = 'bad'  THEN 1 ELSE 0 END) AS bad
+        FROM blocks b LEFT JOIN ratings r ON r.block_id = b.id
+        WHERE b.story_id = ?
+        GROUP BY b.id
+        """,
+        (story_id,),
+    ).fetchall()
+    counts = {r["block_id"]: {"good": r["good"] or 0, "bad": r["bad"] or 0} for r in rows}
+    mine = {}
+    if user_id:
+        mrows = conn.execute(
+            "SELECT r.block_id, r.kind FROM ratings r JOIN blocks b ON b.id = r.block_id "
+            "WHERE b.story_id = ? AND r.user_id = ?",
+            (story_id, user_id),
+        ).fetchall()
+        mine = {r["block_id"]: r["kind"] for r in mrows}
+    conn.close()
+    return counts, mine

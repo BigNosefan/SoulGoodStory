@@ -92,9 +92,48 @@
             <div class="block-foot">
               {{ b.author_name }}{% if b.sequence == 0 %}（创世段）{% endif %} · {{ b.created_at }}
             </div>
+            {% if b.sequence >= 1 %}
+            <div class="block-actions">
+              <button class="rate-btn good{% if b.mine == 'good' %} active{% endif %}" data-block="{{ b.id }}" data-kind="good">
+                👍 {{ good_reviews | random }} <span class="rate-count" data-count>{{ b.good }}</span>
+              </button>
+              <button class="rate-btn bad{% if b.mine == 'bad' %} active{% endif %}" data-block="{{ b.id }}" data-kind="bad">
+                👎 {{ bad_reviews | random }} <span class="rate-count" data-count>{{ b.bad }}</span>
+              </button>
+            </div>
+            {% endif %}
           </div>
         </li>
       {% endfor %}
     </ol>
   </section>
+
+  <script>
+    // 接龙评价：好评/差评（AJAX，不刷新页面）
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.rate-btn');
+      if (!btn) return;
+      btn.disabled = true;
+      fetch('/block/' + btn.dataset.block + '/rate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'kind=' + btn.dataset.kind
+      })
+        .then(function (r) {
+          if (r.status === 401) { window.location = '{{ url_for("login") }}'; return null; }
+          return r.json();
+        })
+        .then(function (d) {
+          if (!d || !d.ok) return;
+          var group = btn.parentElement;
+          var g = group.querySelector('.rate-btn.good');
+          var b = group.querySelector('.rate-btn.bad');
+          g.querySelector('[data-count]').textContent = d.good;
+          b.querySelector('[data-count]').textContent = d.bad;
+          g.classList.toggle('active', d.mine === 'good');
+          b.classList.toggle('active', d.mine === 'bad');
+        })
+        .finally(function () { btn.disabled = false; });
+    });
+  </script>
 {% endblock %}
