@@ -12,14 +12,21 @@
 import os
 import json
 import urllib.request
+import urllib.error
 
 # mock 串联用的过渡词，按片段顺序循环插入
 _CONNECTORS = ["", "接着，", "然后，", "不久后，", "与此同时，", "没想到，", "就在这时，", "后来，"]
 _TERMINALS = "。！？…」』）)】"
 
-DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-_DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
+_DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 _CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
+
+
+def _deepseek_model():
+    # 容错：去掉环境变量里可能带的空格/引号/换行（Vercel 后台粘贴常见），否则 model 非法会 400
+    raw = os.environ.get("GOODSTORY_MODEL", _DEEPSEEK_DEFAULT_MODEL)
+    return raw.strip().strip('"').strip("'") or _DEEPSEEK_DEFAULT_MODEL
 
 
 def active_provider():
@@ -34,7 +41,7 @@ def provider_label():
     """给页面展示用：当前实际使用的串联引擎。"""
     p = active_provider()
     if p == "deepseek":
-        return f"DeepSeek · {os.environ.get('GOODSTORY_MODEL', _DEEPSEEK_DEFAULT_MODEL)}"
+        return f"DeepSeek · {_deepseek_model()}"
     if p == "claude":
         return f"Claude · {os.environ.get('GOODSTORY_MODEL', _CLAUDE_DEFAULT_MODEL)}"
     return "内置 mock 串联器"
@@ -69,10 +76,9 @@ def _build_prompt(opening, segments):
 
 
 def _deepseek_chat(prompt, max_tokens=2000):
-    key = os.environ["DEEPSEEK_API_KEY"]
-    model = os.environ.get("GOODSTORY_MODEL", _DEEPSEEK_DEFAULT_MODEL)
+    key = os.environ["DEEPSEEK_API_KEY"].strip()
     body = json.dumps({
-        "model": model,
+        "model": _deepseek_model(),
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
         "max_tokens": max_tokens,
@@ -83,8 +89,13 @@ def _deepseek_chat(prompt, max_tokens=2000):
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # 把 DeepSeek 的真实错误体带进日志，便于定位（如模型名非法、额度等）
+        detail = e.read().decode("utf-8", "ignore")[:300]
+        raise RuntimeError(f"DeepSeek HTTP {e.code}: {detail}") from None
     # DeepSeek 推理模型会返回 reasoning_content（思考）+ content（正文），只取 content
     return data["choices"][0]["message"]["content"].strip()
 
