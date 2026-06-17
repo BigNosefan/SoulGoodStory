@@ -1,170 +1,236 @@
 {% extends "base.html" %}
-{% block title %}{{ story.title }} · Soul Good Story{% endblock %}
+{% block title %}故事 · Soul Good Story{% endblock %}
 {% block content %}
   <a class="back" href="{{ url_for('index') }}">← 返回首页</a>
 
-  <div class="story-header">
-    <h1 class="page-title">{{ story.title }}</h1>
-    <span class="badge {{ 'badge-done' if story.status == 'finished' else 'badge-live' }}">
-      {{ '已完结' if story.status == 'finished' else '进行中' }}
-    </span>
+  <div id="detail" data-sid="{{ story_id }}">
+    <div class="skeleton t"></div>
+    <div class="skeleton box"></div>
+    <div class="skeleton t" style="width:40%"></div>
   </div>
 
-  <div class="meta-row">
-    <span>🧩 接龙 {{ story.block_count or 0 }} / {{ max_blocks }}</span>
-    <span>👥 {{ story.participant_count or 0 }} 人</span>
-    <span>✍️ 发起人 {{ story.creator_name }}</span>
-  </div>
+<script>
+(function () {
+  var SID = document.getElementById('detail').dataset.sid;
+  var LOGIN_URL = "{{ url_for('login') }}";
+  var INDEX_URL = "{{ url_for('index') }}";
+  var ENGINE = "{{ ai_provider }}";
+  var root = document.getElementById('detail');
 
-  {# ① AI 串联故事正文 #}
-  <section class="ai-box" id="ai-box" data-story-id="{{ story.id }}" data-status="{{ story.ai_status }}">
-    <div class="ai-tag">
-      ✨ 本故事由 {{ ai_provider }} 串联生成
-      <span class="ai-pending" id="ai-pending"{% if story.ai_status != 'pending' %} hidden{% endif %}>生成中…</span>
-    </div>
-    <div class="ai-content" id="ai-content">
-      {% if story.ai_content %}
-        {% for para in story.ai_content.split('\n\n') %}{% if para %}<p>{{ para }}</p>{% endif %}{% endfor %}
-      {% else %}
-        <p class="ai-placeholder">AI 正在生成故事正文，请稍候…</p>
-      {% endif %}
-    </div>
-  </section>
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
 
-  <script>
-    (function () {
-      var box = document.getElementById('ai-box');
-      if (!box || box.dataset.status !== 'pending') return;  // 只有生成中才轮询
-      var sid = box.dataset.storyId;
-      var pendingEl = document.getElementById('ai-pending');
-      var contentEl = document.getElementById('ai-content');
-      var timer = setInterval(function () {
-        fetch('/story/' + sid + '/ai_status')
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            if (d.status !== 'idle') return;          // 仍在生成，下次再查
-            clearInterval(timer);
-            contentEl.innerHTML = '';
-            var paras = (d.paragraphs && d.paragraphs.length) ? d.paragraphs : ['（暂无正文）'];
-            paras.forEach(function (p) {
-              var el = document.createElement('p');
-              el.textContent = p;                     // 用 textContent 防 XSS
-              contentEl.appendChild(el);
-            });
-            if (pendingEl) pendingEl.hidden = true;    // 去掉"生成中"标识
-          })
-          .catch(function () { /* 单次轮询失败忽略，下次继续 */ });
-      }, 2000);
-    })();
-  </script>
+  // 解析正文里的 [[N|关键短语]]，渲染为可点击高亮（点击跳到第 N 段接龙）
+  function fillPara(p, text) {
+    var re = /\[\[(\d+)\|([^\]]*)\]\]/g, last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) p.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var a = el('a', 'hl', m[2]);
+      a.dataset.seq = m[1];
+      a.title = '点击查看第 ' + m[1] + ' 段接龙';
+      p.appendChild(a);
+      last = re.lastIndex;
+    }
+    if (last < text.length) p.appendChild(document.createTextNode(text.slice(last)));
+  }
 
-  {# ② 接龙入口（占位输入框 → 跳转发布页） #}
-  {% if story.status == 'finished' %}
-    <div class="relay-entry disabled">故事已完结，无法接龙</div>
-  {% elif not user %}
-    <a class="relay-entry" href="{{ url_for('login', next=url_for('publish', story_id=story.id)) }}">
-      登录后接下去写一句…
-    </a>
-  {% elif consecutive %}
-    <div class="relay-entry disabled">请等待其他人接龙后再继续（不能连续接龙）</div>
-  {% else %}
-    <a class="relay-entry" href="{{ url_for('publish', story_id=story.id) }}">
-      接下去会发生什么？点此接龙（≤ {{ relay_max }} 字）
-    </a>
-  {% endif %}
-
-  {% if is_creator and story.status != 'finished' %}
-    <form class="finish-form" method="post" action="{{ url_for('finish', story_id=story.id) }}">
-      <button class="btn-secondary" type="submit"
-        onclick="return confirm('确定要完结这个故事吗？完结后将无法继续接龙。')">完结故事</button>
-    </form>
-  {% endif %}
-
-  {# ③ 用户接龙记录（原始片段，不可篡改） #}
-  <section class="records">
-    <h2 class="section-title">接龙记录</h2>
-    <ol class="block-list">
-      {% for b in blocks %}
-        <li class="block-item">
-          <div class="block-seq{% if b.sequence == 0 %} is-genesis{% endif %}">{{ 0 if b.sequence == 0 else b.sequence }}</div>
-          <div class="block-main">
-            <div class="block-body">
-              <div class="block-content">{{ b.raw_content }}</div>
-              <div class="block-foot">
-                {{ b.author_name }}{% if b.sequence == 0 %}（创世段）{% endif %} · {{ b.created_at }}
-              </div>
-              {% if b.sequence >= 1 %}
-              <div class="block-actions">
-                <button class="rate-btn good{% if b.mine == 'good' %} active{% endif %}" data-block="{{ b.id }}" data-kind="good">
-                  👍 {{ good_reviews | random }} <span class="rate-count" data-count>{{ b.good }}</span>
-                </button>
-                <button class="rate-btn bad{% if b.mine == 'bad' %} active{% endif %}" data-block="{{ b.id }}" data-kind="bad">
-                  👎 {{ bad_reviews | random }} <span class="rate-count" data-count>{{ b.bad }}</span>
-                </button>
-              </div>
-              {% endif %}
-            </div>
-            {% if b.sequence >= 1 %}
-            <aside class="ai-review" data-block="{{ b.id }}"{% if b.ai_review %} data-ready="1"{% endif %}>
-              <div class="ai-review-tag">🌶️ AI辣评</div>
-              <div class="ai-review-text">{{ b.ai_review if b.ai_review else 'AI 正在辣评……' }}</div>
-            </aside>
-            {% endif %}
-          </div>
-        </li>
-      {% endfor %}
-    </ol>
-  </section>
-
-  <script>
-    // 接龙评价：好评/差评（AJAX，不刷新页面）
-    document.addEventListener('click', function (e) {
-      var btn = e.target.closest('.rate-btn');
-      if (!btn) return;
-      btn.disabled = true;
-      fetch('/block/' + btn.dataset.block + '/rate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'kind=' + btn.dataset.kind
-      })
-        .then(function (r) {
-          if (r.status === 401) { window.location = '{{ url_for("login") }}'; return null; }
-          return r.json();
-        })
-        .then(function (d) {
-          if (!d || !d.ok) return;
-          var group = btn.parentElement;
-          var g = group.querySelector('.rate-btn.good');
-          var b = group.querySelector('.rate-btn.bad');
-          g.querySelector('[data-count]').textContent = d.good;
-          b.querySelector('[data-count]').textContent = d.bad;
-          g.classList.toggle('active', d.mine === 'good');
-          b.classList.toggle('active', d.mine === 'bad');
-        })
-        .finally(function () { btn.disabled = false; });
+  function renderAi(container, paragraphs) {
+    container.innerHTML = '';
+    if (!paragraphs || !paragraphs.length) {
+      container.appendChild(el('p', 'ai-placeholder', 'AI 正在生成故事正文……'));
+      return;
+    }
+    paragraphs.forEach(function (t) {
+      var p = el('p');
+      fillPara(p, t);
+      container.appendChild(p);
     });
-  </script>
+  }
 
-  <script>
-    // AI 辣评：对还没生成的接龙轮询，生成好了就填进去
-    (function () {
-      var pend = Array.prototype.slice.call(document.querySelectorAll('.ai-review:not([data-ready])'));
-      if (!pend.length) return;
-      var timer = setInterval(function () {
-        pend = pend.filter(function (el) { return !el.dataset.ready; });
-        if (!pend.length) { clearInterval(timer); return; }
-        pend.forEach(function (el) {
-          fetch('/block/' + el.dataset.block + '/review')
-            .then(function (r) { return r.json(); })
-            .then(function (d) {
-              if (d && d.ready && d.review) {
-                el.querySelector('.ai-review-text').textContent = d.review;
-                el.dataset.ready = '1';
-              }
-            })
-            .catch(function () {});
-        });
-      }, 2500);
-    })();
-  </script>
+  function rateBtn(b, kind, phrases) {
+    var btn = el('button', 'rate-btn ' + kind + (b.mine === kind ? ' active' : ''));
+    btn.dataset.block = b.id;
+    btn.dataset.kind = kind;
+    var phrase = phrases[Math.floor(Math.random() * phrases.length)];
+    btn.appendChild(document.createTextNode((kind === 'good' ? '👍 ' : '👎 ') + phrase + ' '));
+    var cnt = el('span', 'rate-count', String(kind === 'good' ? b.good : b.bad));
+    cnt.setAttribute('data-count', '');
+    btn.appendChild(cnt);
+    return btn;
+  }
+
+  function blockNode(b, reviews) {
+    var li = el('li', 'block-item');
+    li.id = 'blk-' + b.sequence;   // 高亮点击跳转锚点（按 sequence）
+    li.appendChild(el('div', 'block-seq' + (b.is_genesis ? ' is-genesis' : ''), b.is_genesis ? '0' : String(b.sequence)));
+    var main = el('div', 'block-main');
+    var body = el('div', 'block-body');
+    body.appendChild(el('div', 'block-content', b.raw_content));
+    body.appendChild(el('div', 'block-foot', b.author_name + (b.is_genesis ? '（创世段）' : '') + ' · ' + b.created_at));
+    if (!b.is_genesis) {
+      var acts = el('div', 'block-actions');
+      acts.appendChild(rateBtn(b, 'good', reviews.good));
+      acts.appendChild(rateBtn(b, 'bad', reviews.bad));
+      body.appendChild(acts);
+    }
+    main.appendChild(body);
+    if (!b.is_genesis) {
+      var rev = el('aside', 'ai-review');
+      rev.dataset.block = b.id;
+      if (b.ai_review) rev.dataset.ready = '1';
+      rev.appendChild(el('div', 'ai-review-tag', '🌶️ AI辣评'));
+      rev.appendChild(el('div', 'ai-review-text', b.ai_review || 'AI 正在辣评……'));
+      main.appendChild(rev);
+    }
+    li.appendChild(main);
+    return li;
+  }
+
+  function jumpTo(seq) {
+    var t = document.getElementById('blk-' + seq);
+    if (!t) return;
+    t.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash');
+  }
+
+  function render(d) {
+    var s = d.story;
+    document.title = s.title + ' · Soul Good Story';
+    root.innerHTML = '';
+
+    var head = el('div', 'story-header');
+    head.appendChild(el('h1', 'page-title', s.title));
+    head.appendChild(el('span', 'badge ' + (s.status === 'finished' ? 'badge-done' : 'badge-live'),
+      s.status === 'finished' ? '已完结' : '进行中'));
+    root.appendChild(head);
+
+    var meta = el('div', 'meta-row');
+    meta.appendChild(el('span', null, '🧩 接龙 ' + s.block_count + ' / ' + d.max_blocks));
+    meta.appendChild(el('span', null, '👥 ' + s.participant_count + ' 人'));
+    meta.appendChild(el('span', null, '✍️ 发起人 ' + s.creator_name));
+    root.appendChild(meta);
+
+    // AI 串联正文
+    var box = el('section', 'ai-box');
+    var tag = el('div', 'ai-tag', '✨ 本故事由 ' + ENGINE + ' 串联生成');
+    var pend = el('span', 'ai-pending', '生成中…');
+    pend.id = 'ai-pending';
+    if (s.ai_status !== 'pending') pend.hidden = true;
+    tag.appendChild(pend);
+    box.appendChild(tag);
+    var content = el('div', 'ai-content');
+    content.id = 'ai-content';
+    renderAi(content, s.ai_paragraphs);
+    box.appendChild(content);
+    root.appendChild(box);
+
+    // 接龙入口
+    if (s.status === 'finished') {
+      root.appendChild(el('div', 'relay-entry disabled', '故事已完结，无法接龙'));
+    } else if (!d.logged_in) {
+      var a = el('a', 'relay-entry', '登录后接下去写一句…');
+      a.href = LOGIN_URL + '?next=' + encodeURIComponent('/publish?story_id=' + s.id);
+      root.appendChild(a);
+    } else if (d.consecutive) {
+      root.appendChild(el('div', 'relay-entry disabled', '请等待其他人接龙后再继续（不能连续接龙）'));
+    } else {
+      var a2 = el('a', 'relay-entry', '接下去会发生什么？点此接龙（≤ ' + d.relay_max + ' 字）');
+      a2.href = '/publish?story_id=' + s.id;
+      root.appendChild(a2);
+    }
+
+    // 完结按钮（仅发起人 + 进行中）
+    if (d.is_creator && s.status !== 'finished') {
+      var f = el('form', 'finish-form');
+      f.method = 'post';
+      f.action = '/story/' + s.id + '/finish';
+      var fb = el('button', 'btn-secondary', '完结故事');
+      fb.type = 'submit';
+      fb.onclick = function () { return confirm('确定要完结这个故事吗？完结后将无法继续接龙。'); };
+      f.appendChild(fb);
+      root.appendChild(f);
+    }
+
+    // 接龙记录
+    var sec = el('section', 'records');
+    sec.appendChild(el('h2', 'section-title', '接龙记录'));
+    var ol = el('ol', 'block-list');
+    var reviews = { good: d.good_reviews, bad: d.bad_reviews };
+    d.blocks.forEach(function (b) { ol.appendChild(blockNode(b, reviews)); });
+    sec.appendChild(ol);
+    root.appendChild(sec);
+
+    if (s.ai_status === 'pending') pollAi();
+    pollReviews();
+  }
+
+  function pollAi() {
+    var timer = setInterval(function () {
+      fetch('/story/' + SID + '/ai_status').then(function (r) { return r.json(); }).then(function (dd) {
+        if (dd.status !== 'idle') return;
+        clearInterval(timer);
+        renderAi(document.getElementById('ai-content'), dd.paragraphs);
+        var pe = document.getElementById('ai-pending'); if (pe) pe.hidden = true;
+      }).catch(function () {});
+    }, 2000);
+  }
+
+  function pollReviews() {
+    var pend = [].slice.call(document.querySelectorAll('.ai-review:not([data-ready])'));
+    if (!pend.length) return;
+    var timer = setInterval(function () {
+      pend = pend.filter(function (e) { return !e.dataset.ready; });
+      if (!pend.length) { clearInterval(timer); return; }
+      pend.forEach(function (e) {
+        fetch('/block/' + e.dataset.block + '/review').then(function (r) { return r.json(); }).then(function (dd) {
+          if (dd && dd.ready && dd.review) {
+            e.querySelector('.ai-review-text').textContent = dd.review;
+            e.dataset.ready = '1';
+          }
+        }).catch(function () {});
+      });
+    }, 2500);
+  }
+
+  // 事件委托：高亮跳转 + 评价
+  document.addEventListener('click', function (ev) {
+    var hl = ev.target.closest('.hl');
+    if (hl) { jumpTo(hl.dataset.seq); return; }
+    var btn = ev.target.closest('.rate-btn');
+    if (!btn) return;
+    btn.disabled = true;
+    fetch('/block/' + btn.dataset.block + '/rate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'kind=' + btn.dataset.kind
+    }).then(function (r) {
+      if (r.status === 401) { window.location = LOGIN_URL; return null; }
+      return r.json();
+    }).then(function (dd) {
+      if (!dd || !dd.ok) return;
+      var g = btn.parentElement.querySelector('.rate-btn.good');
+      var bd = btn.parentElement.querySelector('.rate-btn.bad');
+      g.querySelector('[data-count]').textContent = dd.good;
+      bd.querySelector('[data-count]').textContent = dd.bad;
+      g.classList.toggle('active', dd.mine === 'good');
+      bd.classList.toggle('active', dd.mine === 'bad');
+    }).finally(function () { btn.disabled = false; });
+  });
+
+  // 异步拉取数据并渲染
+  fetch('/story/' + SID + '/data').then(function (r) {
+    if (!r.ok) throw 0;
+    return r.json();
+  }).then(function (d) {
+    if (!d.ok) throw 0;
+    render(d);
+  }).catch(function () {
+    root.innerHTML = '<p class="subtitle">故事不存在或加载失败。<a class="link" href="' + INDEX_URL + '">返回首页</a></p>';
+  });
+})();
+</script>
 {% endblock %}

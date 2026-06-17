@@ -4,6 +4,7 @@
 """
 
 import os
+import re
 
 from flask import (
     Flask, render_template, request, redirect, url_for, session, flash, abort,
@@ -41,6 +42,13 @@ def _inject_ai_provider():
 # 评价文案（好评/差评各 5 条，前端每条接龙随机展示一条）
 GOOD_REVIEWS = ["神来一笔", "妙笔生花", "封神操作", "脑洞清奇", "全场最佳"]
 BAD_REVIEWS = ["注水文", "强行尬接", "逻辑崩坏", "跑题预警", "平平无奇"]
+
+# 正文里 [[编号|关键短语]] 的标注：详情页渲染为可点击高亮；其它地方（如卡片摘要）去标签
+_TAG_RE = re.compile(r"\[\[\d+\|([^\]]*)\]\]")
+
+
+def _plain(text):
+    return _TAG_RE.sub(r"\1", text or "")
 
 # 接龙失败原因 -> 用户提示
 RELAY_ERRORS = {
@@ -94,7 +102,11 @@ def _generate_review(block_id):
 
 @app.route("/")
 def index():
-    return render_template("index.html", stories=db.list_stories(), user=current_user())
+    stories = db.list_stories()
+    for s in stories:
+        plain = _plain(s["ai_content"])
+        s["summary"] = plain[:60] + ("…" if len(plain) > 60 else "")
+    return render_template("index.html", stories=stories, user=current_user())
 
 
 # ---------- 登录 / 退出 ----------
@@ -125,25 +137,45 @@ def logout():
 
 @app.route("/story/<int:story_id>")
 def story_detail(story_id):
+    # 只渲染骨架，秒进；数据由前端异步拉 /story/<id>/data，降低点击响应时延
+    return render_template("detail.html", story_id=story_id)
+
+
+@app.route("/story/<int:story_id>/data")
+def story_data(story_id):
     story = db.get_story(story_id)
     if not story:
-        abort(404)
+        return {"ok": False}, 404
     blocks = db.get_blocks(story_id)
     user = current_user()
     counts, mine = db.get_ratings(story_id, user["id"] if user else None)
-    for b in blocks:  # 把每条接龙的好评/差评数与"我的投票"挂到 block 上
-        c = counts.get(b["id"], {"good": 0, "bad": 0})
-        b["good"], b["bad"], b["mine"] = c["good"], c["bad"], mine.get(b["id"])
     tail = blocks[-1] if blocks else None
-    is_creator = bool(user and user["id"] == story["creator_id"])
-    consecutive = bool(user and tail and tail["author_id"] == user["id"])
-    return render_template(
-        "detail.html",
-        story=story, blocks=blocks, user=user,
-        is_creator=is_creator, consecutive=consecutive,
-        max_blocks=db.MAX_BLOCKS, relay_max=db.MAX_RELAY,
-        good_reviews=GOOD_REVIEWS, bad_reviews=BAD_REVIEWS,
-    )
+    block_list = []
+    for b in blocks:
+        c = counts.get(b["id"], {"good": 0, "bad": 0})
+        block_list.append({
+            "id": b["id"], "sequence": b["sequence"], "raw_content": b["raw_content"],
+            "author_name": b["author_name"], "created_at": b["created_at"],
+            "is_genesis": b["sequence"] == 0, "ai_review": b["ai_review"],
+            "good": c["good"], "bad": c["bad"], "mine": mine.get(b["id"]),
+        })
+    return {
+        "ok": True,
+        "logged_in": bool(user),
+        "is_creator": bool(user and user["id"] == story["creator_id"]),
+        "consecutive": bool(user and tail and tail["author_id"] == user["id"]),
+        "relay_max": db.MAX_RELAY,
+        "max_blocks": db.MAX_BLOCKS,
+        "good_reviews": GOOD_REVIEWS,
+        "bad_reviews": BAD_REVIEWS,
+        "story": {
+            "id": story["id"], "title": story["title"], "status": story["status"],
+            "block_count": story["block_count"], "participant_count": story["participant_count"],
+            "creator_name": story["creator_name"], "ai_status": story["ai_status"],
+            "ai_paragraphs": [p for p in (story["ai_content"] or "").split("\n\n") if p],
+        },
+        "blocks": block_list,
+    }
 
 
 # ---------- AI 串联状态（前端轮询） ----------

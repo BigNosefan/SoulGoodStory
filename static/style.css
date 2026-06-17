@@ -183,6 +183,25 @@ body::after {
 .ai-pending::before { content: ""; width: 11px; height: 11px; margin-right: 6px; border-radius: 50%; border: 2px solid rgba(34, 211, 238, .25); border-top-color: var(--cyan); animation: spin .8s linear infinite; }
 .ai-pending[hidden] { display: none; }  /* 修复：上面的 display:inline-flex 会让 hidden 属性失效，必须显式藏掉 */
 
+/* 正文里来自接龙的关键短语：加粗 + 渐变色 + 可点击跳转 */
+.ai-content .hl {
+  font-weight: 700; cursor: pointer; text-decoration: none;
+  background: linear-gradient(120deg, #5ef2cf, #6aa3ff);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  border-bottom: 1px dashed rgba(94, 242, 207, .5);
+}
+.ai-content .hl:hover { border-bottom-color: var(--violet); filter: brightness(1.15); }
+
+/* 跳转目标块的闪烁高亮 */
+@keyframes gs-flash { 0% { background: rgba(34, 211, 238, .22); } 100% { background: transparent; } }
+.block-item.flash { animation: gs-flash 1.8s ease; border-radius: 12px; }
+
+/* 详情页加载骨架 */
+.skeleton { background: linear-gradient(90deg, rgba(255,255,255,.04), rgba(255,255,255,.12), rgba(255,255,255,.04)); background-size: 200% 100%; animation: gs-sk 1.2s infinite; border-radius: 12px; }
+.skeleton.t { height: 26px; width: 55%; margin: 14px 0; }
+.skeleton.box { height: 150px; margin: 16px 0; }
+@keyframes gs-sk { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
 /* 接龙入口 */
 .relay-entry {
   display: block; width: 100%; text-align: left; background: var(--grad-soft); color: var(--cyan);

@@ -3,7 +3,7 @@
   <section class="hero">
     <span class="hero-badge"><i class="dot"></i>{{ ai_provider }} 驱动</span>
     <h1 class="hero-title">Soul Good Story</h1>
-    <p class="hero-sub">系统或用户起一个开头，大家一句句接龙，AI 把碎片串成完整故事。</p>
+    <p class="hero-sub">一句话起笔，一群人成书 — 让每一次灵光乍现，都成为众人共同书写的好故事。</p>
   </section>
 
   {% if stories %}
@@ -17,9 +17,7 @@
                 {{ '已完结' if s.status == 'finished' else '进行中' }}
               </span>
             </div>
-            <p class="card-summary">
-              {{ (s.ai_content or '')[:60] }}{% if (s.ai_content or '')|length > 60 %}…{% endif %}
-            </p>
+            <p class="card-summary">{{ s.summary }}</p>
             <div class="card-meta">
               <span>🧩 接龙 {{ s.block_count or 0 }}</span>
               <span>👥 {{ s.participant_count or 0 }} 人</span>
