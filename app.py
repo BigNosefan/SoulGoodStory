@@ -4,7 +4,6 @@
 """
 
 import os
-import threading
 
 from flask import (
     Flask, render_template, request, redirect, url_for, session, flash, abort,
@@ -60,8 +59,14 @@ def current_user():
     return None
 
 
+def kick_ai(story_id):
+    """标记"生成中"。真正的串联在 /story/<id>/ai_status 轮询时同步进行——
+    serverless 上响应返回后实例会被冻结，后台线程跑不完，故改为按需同步生成。"""
+    db.set_ai_status(story_id, "pending")
+
+
 def _generate_ai(story_id):
-    """实际调用 AI 串联并写回（可能耗时数秒）。结束时把状态置回 idle。"""
+    """同步生成并缓存故事正文，结束时把状态置回 idle。"""
     try:
         blocks = db.get_blocks(story_id)
         if blocks:
@@ -72,51 +77,17 @@ def _generate_ai(story_id):
         db.set_ai_status(story_id, "idle")
 
 
-def kick_ai(story_id):
-    """异步生成：先标记"生成中"，再丢到后台线程，请求立即返回。"""
-    db.set_ai_status(story_id, "pending")
-    threading.Thread(target=_generate_ai, args=(story_id,), daemon=True).start()
-
-
-def recover_pending():
-    """启动时重跑遗留的"生成中"故事：后台线程随进程退出而中断，
-    会留下 ai_status=pending 的孤儿，页面就会一直转圈。重启时重新触发即可。"""
-    for s in db.list_stories():
-        if s.get("ai_status") == "pending":
-            kick_ai(s["id"])
-
-
-# 单条接龙的 AI 辣评：异步生成，最多并发 4 条，同一块同时只生成一次
-_REVIEW_SEMA = threading.Semaphore(4)
-_reviewing = set()
-_reviewing_lock = threading.Lock()
-
-
 def _generate_review(block_id):
+    """同步生成并缓存单条接龙的 AI 辣评，返回辣评文本。"""
     blk = db.get_block(block_id)
     if not blk or blk["sequence"] < 1:
-        return
+        return ""
     blocks = db.get_blocks(blk["story_id"])
     opening = blocks[0]["raw_content"] if blocks else ""
     prev = [b["raw_content"] for b in blocks if 1 <= b["sequence"] < blk["sequence"]]
-    db.set_block_review(block_id, ai.review(opening, prev, blk["raw_content"]))
-
-
-def kick_review(block_id):
-    with _reviewing_lock:
-        if block_id in _reviewing:
-            return
-        _reviewing.add(block_id)
-
-    def run():
-        try:
-            with _REVIEW_SEMA:
-                _generate_review(block_id)
-        finally:
-            with _reviewing_lock:
-                _reviewing.discard(block_id)
-
-    threading.Thread(target=run, daemon=True).start()
+    text = ai.review(opening, prev, blk["raw_content"])
+    db.set_block_review(block_id, text)
+    return text
 
 
 # ---------- 首页 ----------
@@ -163,8 +134,6 @@ def story_detail(story_id):
     for b in blocks:  # 把每条接龙的好评/差评数与"我的投票"挂到 block 上
         c = counts.get(b["id"], {"good": 0, "bad": 0})
         b["good"], b["bad"], b["mine"] = c["good"], c["bad"], mine.get(b["id"])
-        if b["sequence"] >= 1 and not b["ai_review"]:
-            kick_review(b["id"])  # 没有辣评的接龙，进页面即开始异步生成
     tail = blocks[-1] if blocks else None
     is_creator = bool(user and user["id"] == story["creator_id"])
     consecutive = bool(user and tail and tail["author_id"] == user["id"])
@@ -184,6 +153,9 @@ def ai_status(story_id):
     story = db.get_story(story_id)
     if not story:
         abort(404)
+    if story["ai_status"] == "pending":   # 按需同步生成（serverless 友好）
+        _generate_ai(story_id)
+        story = db.get_story(story_id)
     paragraphs = [p for p in (story["ai_content"] or "").split("\n\n") if p]
     return {"status": story["ai_status"], "paragraphs": paragraphs}
 
@@ -210,9 +182,7 @@ def publish():
             if not res["ok"]:
                 flash(RELAY_ERRORS.get(res["error"], "接龙失败"))
                 return redirect(url_for("story_detail", story_id=story_id))
-            kick_ai(story_id)  # 接龙已落盘，AI 串联异步进行
-            if res.get("block_id"):
-                kick_review(res["block_id"])  # 这条接龙的 AI 辣评也异步生成
+            kick_ai(story_id)  # 接龙已落盘，正文与辣评在轮询时按需生成
             flash("接龙成功，故事已达上限并完结！" if res.get("finished") else "接龙成功！")
             return redirect(url_for("story_detail", story_id=story_id))
 
@@ -285,9 +255,10 @@ def block_review(block_id):
     blk = db.get_block(block_id)
     if not blk:
         abort(404)
-    if not blk["ai_review"]:
-        kick_review(block_id)  # 还没生成就触发
-    return {"ready": bool(blk["ai_review"]), "review": blk["ai_review"]}
+    review = blk["ai_review"]
+    if not review and blk["sequence"] >= 1:   # 按需同步生成
+        review = _generate_review(block_id)
+    return {"ready": bool(review), "review": review or ""}
 
 
 # ---------- 启动：建表 + 首次种子数据 ----------
@@ -302,12 +273,14 @@ def ensure_seed():
     sid = db.create_story("末日第七天，冰箱里只剩最后一罐可乐。", editor["id"])
     db.add_block(sid, 0, "我盯着它看了整整三个小时。", u1["id"])
     db.add_block(sid, 1, "窗外忽然传来敲门声，三长两短。", u2["id"])
-    _generate_ai(sid)  # 种子数据同步生成，保证首页一打开就有正文
+    if os.environ.get("VERCEL"):
+        db.set_ai_status(sid, "pending")  # Vercel 冷启动不调 DeepSeek，首访时再生成
+    else:
+        _generate_ai(sid)                 # 本地直接生成，首页即有正文
 
 
 db.init_db()
 ensure_seed()
-recover_pending()
 
 
 if __name__ == "__main__":

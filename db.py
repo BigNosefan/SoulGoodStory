@@ -9,7 +9,9 @@ import sqlite3
 import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "goodstory.db")
+# Vercel / Lambda 文件系统只读，仅 /tmp 可写；本地仍用项目目录。
+_DEFAULT_DB = "/tmp/goodstory.db" if os.environ.get("VERCEL") else os.path.join(BASE_DIR, "goodstory.db")
+DB_PATH = os.environ.get("GOODSTORY_DB_PATH", _DEFAULT_DB)
 
 # 业务常量（与 PRD v1.0 决策一致）
 MAX_OPENING = 50   # 开头字数上限
