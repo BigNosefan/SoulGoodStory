@@ -267,6 +267,8 @@ def ensure_seed():
     """首次启动时插入一个示例故事，让首页非空、可直接体验。"""
     if db.list_stories():
         return
+    if not db.claim_seed():   # 并发冷启动时只让一个实例播种
+        return
     editor = db.get_or_create_user("系统小编")
     u1 = db.get_or_create_user("阿橘")
     u2 = db.get_or_create_user("小满")

@@ -49,6 +49,8 @@ python app.py
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
+| `UPSTASH_REDIS_REST_URL` | 无 | **必填**，Upstash Redis REST 地址（数据存储） |
+| `UPSTASH_REDIS_REST_TOKEN` | 无 | **必填**，Upstash Redis REST token |
 | `PORT` | `5001` | 服务端口 |
 | `DEEPSEEK_API_KEY` | 无 | 设置后启用 DeepSeek 串联 |
 | `ANTHROPIC_API_KEY` | 无 | 设置后启用 Claude 串联（DeepSeek 优先） |
@@ -58,13 +60,13 @@ python app.py
 
 ## 部署到 Vercel
 
-已含 `vercel.json` + `api/index.py`。serverless 有几点限制，务必注意：
+已含 `vercel.json` + `api/index.py`。注意：
 
-1. **配环境变量**：Vercel 项目 → Settings → Environment Variables 添加 `DEEPSEEK_API_KEY` 和 `GOODSTORY_MODEL=deepseek-v4-flash`（`.env` 不会被部署，不配会回退 mock）。改完需 Redeploy。
-2. **数据是临时的**：SQLite 存于 `/tmp`，冷启动重置、多实例间不共享。内置示例故事每个实例会自建，可正常体验；用户新建内容仅在同一实例内可见。要持久/共享请改用 Postgres（Neon / Vercel Postgres）或换 Render / Railway 等常驻进程平台。
+1. **配环境变量**：Vercel 项目 → Settings → Environment Variables 添加 `UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN`（必填，否则无法启动）、`DEEPSEEK_API_KEY`、`GOODSTORY_MODEL=deepseek-v4-flash`（`.env` 不会被部署）。改完需 Redeploy。
+2. **数据持久且共享**：已接入 Upstash Redis（REST API），数据跨实例共享、冷启动不丢失，无需本地文件。
 3. AI 生成改为「轮询时同步生成」（serverless 无常驻后台线程），`maxDuration` 设为 60s。
 
 ## 说明
 
-- 数据存于 `goodstory.db`（SQLite，首次运行自动创建）。删除该文件即可重置数据。
+- 数据存于 **Upstash Redis**（通过 REST API + 标准库 urllib，无需额外依赖；键以 `gs:` 前缀），数据持久且多实例共享；需配置 `UPSTASH_REDIS_REST_URL/TOKEN`。
 - 这是本地演示用 demo：登录为昵称简化版，未做内容风控/埋点，使用 Flask 开发服务器，请勿用于生产。

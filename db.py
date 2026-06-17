@@ -1,106 +1,142 @@
-"""SQLite 数据层：users / stories / blocks。
+"""数据层：Upstash Redis（通过 REST API + 标准库 urllib，无需额外依赖）。
 
-把"开头"也存为一个 block（sequence=0，创世段），所有片段统一在 blocks 表，
-链尾 = MAX(sequence)。接龙数 = MAX(sequence)，参与人数 = COUNT(DISTINCT author_id)。
+需要环境变量（由 app.py 从 .env 加载，Vercel 在后台配置）：
+  UPSTASH_REDIS_REST_URL   例：https://xxx.upstash.io
+  UPSTASH_REDIS_REST_TOKEN
+
+所有键以 gs: 前缀命名，避免与同库其它数据冲突。对外函数签名与原 SQLite 版保持一致，
+app.py 无需改动。把"开头"也存为 sequence=0 的区块；故事/区块的聚合字段做了反范式缓存，
+以便列表页一次读取。
 """
 
 import os
-import sqlite3
+import json
+import time
 import datetime
+import urllib.request
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Vercel / Lambda 文件系统只读，仅 /tmp 可写；本地仍用项目目录。
-_DEFAULT_DB = "/tmp/goodstory.db" if os.environ.get("VERCEL") else os.path.join(BASE_DIR, "goodstory.db")
-DB_PATH = os.environ.get("GOODSTORY_DB_PATH", _DEFAULT_DB)
-
-# 业务常量（与 PRD v1.0 决策一致）
 MAX_OPENING = 50   # 开头字数上限
 MAX_RELAY = 20     # 单次接龙字数上限
 MAX_BLOCKS = 50    # 接龙达到该段数自动完结
+
+_PREFIX = "gs:"
 
 
 def _now():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")  # 后台线程写库时，读请求最多等 5s 而不是直接报错
-    return conn
+def _k(*parts):
+    return _PREFIX + ":".join(str(p) for p in parts)
+
+
+# ---------- Upstash REST 封装 ----------
+
+def _conf():
+    url = os.environ.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    if not url or not token:
+        raise RuntimeError("缺少 UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN 环境变量")
+    return url, token
+
+
+def _post(path, payload):
+    url, token = _conf()
+    req = urllib.request.Request(
+        url + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def r(*args):
+    """执行单条 Redis 命令，返回 result。"""
+    data = _post("/", [str(a) for a in args])
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError("Redis: " + str(data["error"]))
+    return data.get("result") if isinstance(data, dict) else data
+
+
+def rpipe(cmds):
+    """批量执行命令，返回 result 列表（顺序对应）。"""
+    if not cmds:
+        return []
+    payload = [[str(a) for a in cmd] for cmd in cmds]
+    data = _post("/pipeline", payload)
+    out = []
+    for item in data:
+        if isinstance(item, dict) and item.get("error"):
+            raise RuntimeError("Redis: " + str(item["error"]))
+        out.append(item.get("result") if isinstance(item, dict) else item)
+    return out
+
+
+def _dict(flat):
+    """HGETALL 的扁平数组 [k1,v1,k2,v2] -> dict。"""
+    if not flat:
+        return {}
+    return {flat[i]: flat[i + 1] for i in range(0, len(flat), 2)}
 
 
 def init_db():
-    conn = get_db()
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            nickname   TEXT UNIQUE NOT NULL,
-            created_at TEXT NOT NULL
-        );
+    # Redis 无需建表；连通性在首次真实命令时校验。
+    return
 
-        CREATE TABLE IF NOT EXISTS stories (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            title      TEXT NOT NULL,
-            creator_id INTEGER NOT NULL REFERENCES users(id),
-            status     TEXT NOT NULL DEFAULT 'ongoing',
-            ai_content TEXT NOT NULL DEFAULT '',
-            ai_status  TEXT NOT NULL DEFAULT 'idle',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
 
-        CREATE TABLE IF NOT EXISTS blocks (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            story_id    INTEGER NOT NULL REFERENCES stories(id),
-            sequence    INTEGER NOT NULL,
-            raw_content TEXT NOT NULL,
-            author_id   INTEGER NOT NULL REFERENCES users(id),
-            created_at  TEXT NOT NULL,
-            ai_review   TEXT NOT NULL DEFAULT '',
-            UNIQUE(story_id, sequence)
-        );
+def claim_seed():
+    """并发冷启动时只让一个实例播种种子数据。"""
+    return bool(r("SET", _k("seeded"), "1", "NX"))
 
-        CREATE TABLE IF NOT EXISTS ratings (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            block_id   INTEGER NOT NULL REFERENCES blocks(id),
-            user_id    INTEGER NOT NULL REFERENCES users(id),
-            kind       TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(block_id, user_id)
-        );
-        """
-    )
-    # 兼容旧库：补 ai_status 列（旧版本建的表没有该列）
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(stories)").fetchall()]
-    if "ai_status" not in cols:
-        conn.execute("ALTER TABLE stories ADD COLUMN ai_status TEXT NOT NULL DEFAULT 'idle'")
-    bcols = [r[1] for r in conn.execute("PRAGMA table_info(blocks)").fetchall()]
-    if "ai_review" not in bcols:
-        conn.execute("ALTER TABLE blocks ADD COLUMN ai_review TEXT NOT NULL DEFAULT ''")
-    conn.commit()
-    conn.close()
+
+# ---------- 序列化 ----------
+
+def _story_dict(d):
+    return {
+        "id": int(d["id"]),
+        "title": d.get("title", ""),
+        "creator_id": int(d.get("creator_id", 0)),
+        "creator_name": d.get("creator_name", ""),
+        "status": d.get("status", "ongoing"),
+        "ai_content": d.get("ai_content", ""),
+        "ai_status": d.get("ai_status", "idle"),
+        "block_count": int(d.get("block_count", 0)),
+        "participant_count": int(d.get("participant_count", 0)),
+        "created_at": d.get("created_at", ""),
+        "updated_at": d.get("updated_at", ""),
+    }
+
+
+def _block_dict(d):
+    return {
+        "id": int(d["id"]),
+        "story_id": int(d.get("story_id", 0)),
+        "sequence": int(d.get("sequence", 0)),
+        "raw_content": d.get("raw_content", ""),
+        "author_id": int(d.get("author_id", 0)),
+        "author_name": d.get("author_name", ""),
+        "created_at": d.get("created_at", ""),
+        "ai_review": d.get("ai_review", ""),
+    }
 
 
 # ---------- 用户 ----------
 
 def get_or_create_user(nickname):
     nickname = nickname.strip()[:20]
-    conn = get_db()
-    cur = conn.cursor()
-    row = cur.execute("SELECT * FROM users WHERE nickname = ?", (nickname,)).fetchone()
-    if row is None:
-        cur.execute(
-            "INSERT INTO users (nickname, created_at) VALUES (?, ?)",
-            (nickname, _now()),
-        )
-        conn.commit()
-        row = cur.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
-    user = dict(row)
-    conn.close()
-    return user
+    uid = r("GET", _k("nick", nickname))
+    if uid:
+        return {"id": int(uid), "nickname": nickname}
+    uid = r("INCR", _k("seq", "user"))
+    r("HSET", _k("user", uid), "id", uid, "nickname", nickname, "created_at", _now())
+    r("SET", _k("nick", nickname), uid)
+    return {"id": int(uid), "nickname": nickname}
+
+
+def _user_name(uid):
+    return r("HGET", _k("user", uid), "nickname") or ""
 
 
 # ---------- 故事 ----------
@@ -110,252 +146,169 @@ def _make_title(opening):
     return (t[:16] + "…") if len(t) > 16 else t
 
 
+def _append_block(story_id, seq, content, author_id, author_name, ts):
+    bid = r("INCR", _k("seq", "block"))
+    r("HSET", _k("block", bid),
+      "id", bid, "story_id", story_id, "sequence", seq,
+      "raw_content", content, "author_id", author_id, "author_name", author_name,
+      "created_at", ts, "ai_review", "")
+    r("RPUSH", _k("story", story_id, "blocks"), bid)
+    return int(bid)
+
+
 def create_story(opening, creator_id):
-    """创建故事，并写入开头（sequence=0）。返回 story_id。"""
     opening = opening.strip()
-    title = _make_title(opening)
+    creator_name = _user_name(creator_id)
+    sid = r("INCR", _k("seq", "story"))
     ts = _now()
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO stories (title, creator_id, status, ai_content, created_at, updated_at) "
-        "VALUES (?, ?, 'ongoing', '', ?, ?)",
-        (title, creator_id, ts, ts),
-    )
-    story_id = cur.lastrowid
-    cur.execute(
-        "INSERT INTO blocks (story_id, sequence, raw_content, author_id, created_at) "
-        "VALUES (?, 0, ?, ?, ?)",
-        (story_id, opening, creator_id, ts),
-    )
-    conn.commit()
-    conn.close()
-    return story_id
-
-
-_STORY_SELECT = """
-    SELECT s.*,
-        (SELECT MAX(sequence) FROM blocks WHERE story_id = s.id) AS block_count,
-        (SELECT COUNT(DISTINCT author_id) FROM blocks WHERE story_id = s.id) AS participant_count,
-        u.nickname AS creator_name
-    FROM stories s
-    JOIN users u ON u.id = s.creator_id
-"""
+    r("HSET", _k("story", sid),
+      "id", sid, "title", _make_title(opening), "creator_id", creator_id,
+      "creator_name", creator_name, "status", "ongoing",
+      "ai_content", "", "ai_status", "idle",
+      "block_count", 0, "participant_count", 1,
+      "created_at", ts, "updated_at", ts)
+    r("SADD", _k("story", sid, "authors"), creator_id)
+    r("ZADD", _k("stories"), time.time(), sid)
+    _append_block(sid, 0, opening, creator_id, creator_name, ts)  # 开头 = 创世块 seq 0
+    return int(sid)
 
 
 def list_stories():
-    conn = get_db()
-    rows = conn.execute(
-        _STORY_SELECT + " ORDER BY s.updated_at DESC, s.id DESC"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    ids = r("ZREVRANGE", _k("stories"), 0, -1) or []
+    if not ids:
+        return []
+    res = rpipe([["HGETALL", _k("story", sid)] for sid in ids])
+    return [_story_dict(_dict(flat)) for flat in res if flat]
 
 
 def get_story(story_id):
-    conn = get_db()
-    row = conn.execute(_STORY_SELECT + " WHERE s.id = ?", (story_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    d = _dict(r("HGETALL", _k("story", story_id)))
+    return _story_dict(d) if d else None
 
 
 def update_ai_content(story_id, text):
-    conn = get_db()
-    conn.execute("UPDATE stories SET ai_content = ? WHERE id = ?", (text, story_id))
-    conn.commit()
-    conn.close()
+    r("HSET", _k("story", story_id), "ai_content", text)
 
 
 def set_ai_status(story_id, status):
-    """status: 'pending'（生成中）/ 'idle'（已就绪）。"""
-    conn = get_db()
-    conn.execute("UPDATE stories SET ai_status = ? WHERE id = ?", (status, story_id))
-    conn.commit()
-    conn.close()
+    r("HSET", _k("story", story_id), "ai_status", status)
 
 
 def finish_story(story_id, user_id):
-    conn = get_db()
-    cur = conn.cursor()
-    s = cur.execute("SELECT creator_id, status FROM stories WHERE id = ?", (story_id,)).fetchone()
-    if s is None:
-        conn.close()
+    d = _dict(r("HGETALL", _k("story", story_id)))
+    if not d:
         return {"ok": False, "msg": "故事不存在"}
-    if s["creator_id"] != user_id:
-        conn.close()
+    if int(d.get("creator_id", 0)) != user_id:
         return {"ok": False, "msg": "只有发起人可以完结故事"}
-    if s["status"] != "ongoing":
-        conn.close()
+    if d.get("status") != "ongoing":
         return {"ok": False, "msg": "故事已完结"}
-    cur.execute("UPDATE stories SET status = 'finished', updated_at = ? WHERE id = ?", (_now(), story_id))
-    conn.commit()
-    conn.close()
+    r("HSET", _k("story", story_id), "status", "finished", "updated_at", _now())
+    r("ZADD", _k("stories"), time.time(), story_id)
     return {"ok": True}
 
 
 # ---------- 区块（接龙片段） ----------
 
 def get_blocks(story_id):
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT b.*, u.nickname AS author_name "
-        "FROM blocks b JOIN users u ON u.id = b.author_id "
-        "WHERE b.story_id = ? ORDER BY b.sequence ASC",
-        (story_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    ids = r("LRANGE", _k("story", story_id, "blocks"), 0, -1) or []
+    if not ids:
+        return []
+    res = rpipe([["HGETALL", _k("block", bid)] for bid in ids])
+    return [_block_dict(_dict(flat)) for flat in res if flat]
 
 
 def get_tail(story_id):
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM blocks WHERE story_id = ? ORDER BY sequence DESC LIMIT 1",
-        (story_id,),
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    bid = r("LINDEX", _k("story", story_id, "blocks"), -1)
+    if not bid:
+        return None
+    d = _dict(r("HGETALL", _k("block", bid)))
+    return _block_dict(d) if d else None
 
 
 def get_block(block_id):
-    conn = get_db()
-    row = conn.execute("SELECT * FROM blocks WHERE id = ?", (block_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    d = _dict(r("HGETALL", _k("block", block_id)))
+    return _block_dict(d) if d else None
 
 
 def set_block_review(block_id, text):
-    conn = get_db()
-    conn.execute("UPDATE blocks SET ai_review = ? WHERE id = ?", (text, block_id))
-    conn.commit()
-    conn.close()
+    r("HSET", _k("block", block_id), "ai_review", text)
 
 
 def add_block(story_id, expected_sequence, content, author_id):
-    """追加一个接龙片段。
+    """追加接龙片段。返回 {ok, sequence, finished, block_id} 或 {ok:False, error}。
 
-    返回 dict：成功 {ok:True, sequence, finished}；失败 {ok:False, error}
-    error ∈ not_found / finished / consecutive / conflict
+    注：Redis REST 无事务，链尾校验为读后写的乐观并发（demo 并发量低，足够）。
     """
     content = content.strip()
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        story = cur.execute("SELECT status FROM stories WHERE id = ?", (story_id,)).fetchone()
-        if story is None:
-            return {"ok": False, "error": "not_found"}
-        if story["status"] != "ongoing":
-            return {"ok": False, "error": "finished"}
+    story = _dict(r("HGETALL", _k("story", story_id)))
+    if not story:
+        return {"ok": False, "error": "not_found"}
+    if story.get("status") != "ongoing":
+        return {"ok": False, "error": "finished"}
 
-        tail = cur.execute(
-            "SELECT sequence, author_id FROM blocks WHERE story_id = ? ORDER BY sequence DESC LIMIT 1",
-            (story_id,),
-        ).fetchone()
-        tail_seq = tail["sequence"] if tail else -1
-        tail_author = tail["author_id"] if tail else None
+    tail = get_tail(story_id)
+    tail_seq = tail["sequence"] if tail else -1
+    tail_author = tail["author_id"] if tail else None
 
-        # 不允许连续接龙
-        if tail_author is not None and tail_author == author_id:
-            return {"ok": False, "error": "consecutive"}
+    if tail_author is not None and tail_author == author_id:
+        return {"ok": False, "error": "consecutive"}
+    if expected_sequence is not None and expected_sequence != tail_seq:
+        return {"ok": False, "error": "conflict", "tail_sequence": tail_seq}
 
-        # 并发链尾校验
-        if expected_sequence is not None and expected_sequence != tail_seq:
-            return {"ok": False, "error": "conflict", "tail_sequence": tail_seq}
+    new_seq = tail_seq + 1
+    ts = _now()
+    bid = _append_block(story_id, new_seq, content, author_id, _user_name(author_id), ts)
 
-        new_seq = tail_seq + 1
-        ts = _now()
-        # UNIQUE(story_id, sequence) 兜底并发：两人同时插入同一 sequence，必失败其一
-        cur.execute(
-            "INSERT INTO blocks (story_id, sequence, raw_content, author_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (story_id, new_seq, content, author_id, ts),
-        )
-        new_block_id = cur.lastrowid
-        finished = new_seq >= MAX_BLOCKS
-        new_status = "finished" if finished else "ongoing"
-        cur.execute(
-            "UPDATE stories SET updated_at = ?, status = ? WHERE id = ?",
-            (ts, new_status, story_id),
-        )
-        conn.commit()
-        return {"ok": True, "sequence": new_seq, "finished": finished, "block_id": new_block_id}
-    except sqlite3.IntegrityError:
-        # 并发抢同一 sequence
-        return {"ok": False, "error": "conflict"}
-    finally:
-        conn.close()
+    finished = new_seq >= MAX_BLOCKS
+    is_new_author = r("SADD", _k("story", story_id, "authors"), author_id)
+    fields = ["updated_at", ts, "status", "finished" if finished else "ongoing", "block_count", new_seq]
+    if is_new_author:
+        fields += ["participant_count", int(story.get("participant_count", 1)) + 1]
+    r("HSET", _k("story", story_id), *fields)
+    r("ZADD", _k("stories"), time.time(), story_id)
+    return {"ok": True, "sequence": new_seq, "finished": finished, "block_id": bid}
 
 
 # ---------- 评价（好评 / 差评） ----------
 
 def rate_block(block_id, user_id, kind):
-    """好评/差评。再次点同一类型 = 取消(toggle)；点另一类型 = 切换。"""
-    conn = get_db()
-    cur = conn.cursor()
-    if cur.execute("SELECT id FROM blocks WHERE id = ?", (block_id,)).fetchone() is None:
-        conn.close()
+    """再点同一类型 = 取消(toggle)；点另一类型 = 切换。"""
+    if not r("EXISTS", _k("block", block_id)):
         return {"ok": False, "error": "not_found"}
-    existing = cur.execute(
-        "SELECT kind FROM ratings WHERE block_id = ? AND user_id = ?", (block_id, user_id)
-    ).fetchone()
+    key = _k("rate", block_id)
+    existing = r("HGET", key, user_id)
     if existing is None:
-        cur.execute(
-            "INSERT INTO ratings (block_id, user_id, kind, created_at) VALUES (?, ?, ?, ?)",
-            (block_id, user_id, kind, _now()),
-        )
-    elif existing["kind"] == kind:
-        cur.execute("DELETE FROM ratings WHERE block_id = ? AND user_id = ?", (block_id, user_id))
+        r("HSET", key, user_id, kind)
+    elif existing == kind:
+        r("HDEL", key, user_id)
     else:
-        cur.execute(
-            "UPDATE ratings SET kind = ?, created_at = ? WHERE block_id = ? AND user_id = ?",
-            (kind, _now(), block_id, user_id),
-        )
-    conn.commit()
-    conn.close()
+        r("HSET", key, user_id, kind)
     return {"ok": True}
 
 
+def _count(d):
+    vals = list(d.values())
+    return {"good": vals.count("good"), "bad": vals.count("bad")}
+
+
 def get_block_counts(block_id):
-    conn = get_db()
-    row = conn.execute(
-        "SELECT SUM(kind = 'good') AS good, SUM(kind = 'bad') AS bad FROM ratings WHERE block_id = ?",
-        (block_id,),
-    ).fetchone()
-    conn.close()
-    return {"good": row["good"] or 0, "bad": row["bad"] or 0}
+    return _count(_dict(r("HGETALL", _k("rate", block_id))))
 
 
 def get_user_vote(block_id, user_id):
-    conn = get_db()
-    row = conn.execute(
-        "SELECT kind FROM ratings WHERE block_id = ? AND user_id = ?", (block_id, user_id)
-    ).fetchone()
-    conn.close()
-    return row["kind"] if row else None
+    return r("HGET", _k("rate", block_id), user_id)
 
 
 def get_ratings(story_id, user_id=None):
     """返回 (counts, mine)：counts[block_id]={good,bad}；mine[block_id]=kind。"""
-    conn = get_db()
-    rows = conn.execute(
-        """
-        SELECT b.id AS block_id,
-               SUM(CASE WHEN r.kind = 'good' THEN 1 ELSE 0 END) AS good,
-               SUM(CASE WHEN r.kind = 'bad'  THEN 1 ELSE 0 END) AS bad
-        FROM blocks b LEFT JOIN ratings r ON r.block_id = b.id
-        WHERE b.story_id = ?
-        GROUP BY b.id
-        """,
-        (story_id,),
-    ).fetchall()
-    counts = {r["block_id"]: {"good": r["good"] or 0, "bad": r["bad"] or 0} for r in rows}
-    mine = {}
-    if user_id:
-        mrows = conn.execute(
-            "SELECT r.block_id, r.kind FROM ratings r JOIN blocks b ON b.id = r.block_id "
-            "WHERE b.story_id = ? AND r.user_id = ?",
-            (story_id, user_id),
-        ).fetchall()
-        mine = {r["block_id"]: r["kind"] for r in mrows}
-    conn.close()
+    ids = r("LRANGE", _k("story", story_id, "blocks"), 0, -1) or []
+    counts, mine = {}, {}
+    if not ids:
+        return counts, mine
+    res = rpipe([["HGETALL", _k("rate", bid)] for bid in ids])
+    for bid, flat in zip(ids, res):
+        d = _dict(flat)
+        counts[int(bid)] = _count(d)
+        if user_id is not None and d.get(str(user_id)):
+            mine[int(bid)] = d[str(user_id)]
     return counts, mine
