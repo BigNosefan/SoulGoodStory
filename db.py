@@ -25,6 +25,7 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")  # 后台线程写库时，读请求最多等 5s 而不是直接报错
     return conn
 
 
@@ -44,6 +45,7 @@ def init_db():
             creator_id INTEGER NOT NULL REFERENCES users(id),
             status     TEXT NOT NULL DEFAULT 'ongoing',
             ai_content TEXT NOT NULL DEFAULT '',
+            ai_status  TEXT NOT NULL DEFAULT 'idle',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -59,6 +61,10 @@ def init_db():
         );
         """
     )
+    # 兼容旧库：补 ai_status 列（旧版本建的表没有该列）
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(stories)").fetchall()]
+    if "ai_status" not in cols:
+        conn.execute("ALTER TABLE stories ADD COLUMN ai_status TEXT NOT NULL DEFAULT 'idle'")
     conn.commit()
     conn.close()
 
@@ -141,6 +147,14 @@ def get_story(story_id):
 def update_ai_content(story_id, text):
     conn = get_db()
     conn.execute("UPDATE stories SET ai_content = ? WHERE id = ?", (text, story_id))
+    conn.commit()
+    conn.close()
+
+
+def set_ai_status(story_id, status):
+    """status: 'pending'（生成中）/ 'idle'（已就绪）。"""
+    conn = get_db()
+    conn.execute("UPDATE stories SET ai_status = ? WHERE id = ?", (status, story_id))
     conn.commit()
     conn.close()
 

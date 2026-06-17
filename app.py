@@ -4,6 +4,7 @@
 """
 
 import os
+import threading
 
 from flask import (
     Flask, render_template, request, redirect, url_for, session, flash, abort,
@@ -55,14 +56,22 @@ def current_user():
     return None
 
 
-def refresh_ai(story_id):
-    """重新生成并缓存故事的 AI 串联正文。"""
-    blocks = db.get_blocks(story_id)
-    if not blocks:
-        return
-    opening = blocks[0]["raw_content"]
-    segments = [b["raw_content"] for b in blocks[1:]]
-    db.update_ai_content(story_id, ai.stitch(opening, segments))
+def _generate_ai(story_id):
+    """实际调用 AI 串联并写回（可能耗时数秒）。结束时把状态置回 idle。"""
+    try:
+        blocks = db.get_blocks(story_id)
+        if blocks:
+            opening = blocks[0]["raw_content"]
+            segments = [b["raw_content"] for b in blocks[1:]]
+            db.update_ai_content(story_id, ai.stitch(opening, segments))
+    finally:
+        db.set_ai_status(story_id, "idle")
+
+
+def kick_ai(story_id):
+    """异步生成：先标记"生成中"，再丢到后台线程，请求立即返回。"""
+    db.set_ai_status(story_id, "pending")
+    threading.Thread(target=_generate_ai, args=(story_id,), daemon=True).start()
 
 
 # ---------- 首页 ----------
@@ -116,6 +125,17 @@ def story_detail(story_id):
     )
 
 
+# ---------- AI 串联状态（前端轮询） ----------
+
+@app.route("/story/<int:story_id>/ai_status")
+def ai_status(story_id):
+    story = db.get_story(story_id)
+    if not story:
+        abort(404)
+    paragraphs = [p for p in (story["ai_content"] or "").split("\n\n") if p]
+    return {"status": story["ai_status"], "paragraphs": paragraphs}
+
+
 # ---------- 发布页（发起 / 接龙 双模式） ----------
 
 @app.route("/publish", methods=["GET", "POST"])
@@ -138,7 +158,7 @@ def publish():
             if not res["ok"]:
                 flash(RELAY_ERRORS.get(res["error"], "接龙失败"))
                 return redirect(url_for("story_detail", story_id=story_id))
-            refresh_ai(story_id)
+            kick_ai(story_id)  # 接龙已落盘，AI 串联异步进行
             flash("接龙成功，故事已达上限并完结！" if res.get("finished") else "接龙成功！")
             return redirect(url_for("story_detail", story_id=story_id))
 
@@ -147,7 +167,7 @@ def publish():
             flash(f"开头需为 1–{db.MAX_OPENING} 字")
             return redirect(url_for("publish"))
         new_id = db.create_story(content, user["id"])
-        refresh_ai(new_id)
+        kick_ai(new_id)  # 开头已落盘，AI 串联异步进行
         flash("发布成功！")
         return redirect(url_for("story_detail", story_id=new_id))
 
@@ -195,7 +215,7 @@ def ensure_seed():
     sid = db.create_story("末日第七天，冰箱里只剩最后一罐可乐。", editor["id"])
     db.add_block(sid, 0, "我盯着它看了整整三个小时。", u1["id"])
     db.add_block(sid, 1, "窗外忽然传来敲门声，三长两短。", u2["id"])
-    refresh_ai(sid)
+    _generate_ai(sid)  # 种子数据同步生成，保证首页一打开就有正文
 
 
 db.init_db()
@@ -204,4 +224,4 @@ ensure_seed()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

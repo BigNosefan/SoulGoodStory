@@ -17,14 +17,46 @@
   </div>
 
   {# ① AI 串联故事正文 #}
-  <section class="ai-box">
-    <div class="ai-tag">✨ 本故事由 {{ ai_provider }} 串联生成</div>
-    <div class="ai-content">
-      {% for para in (story.ai_content or '').split('\n\n') %}
-        {% if para %}<p>{{ para }}</p>{% endif %}
-      {% endfor %}
+  <section class="ai-box" id="ai-box" data-story-id="{{ story.id }}" data-status="{{ story.ai_status }}">
+    <div class="ai-tag">
+      ✨ 本故事由 {{ ai_provider }} 串联生成
+      <span class="ai-pending" id="ai-pending"{% if story.ai_status != 'pending' %} hidden{% endif %}>· 🌀 生成中…</span>
+    </div>
+    <div class="ai-content" id="ai-content">
+      {% if story.ai_content %}
+        {% for para in story.ai_content.split('\n\n') %}{% if para %}<p>{{ para }}</p>{% endif %}{% endfor %}
+      {% else %}
+        <p class="ai-placeholder">AI 正在生成故事正文，请稍候…</p>
+      {% endif %}
     </div>
   </section>
+
+  <script>
+    (function () {
+      var box = document.getElementById('ai-box');
+      if (!box || box.dataset.status !== 'pending') return;  // 只有生成中才轮询
+      var sid = box.dataset.storyId;
+      var pendingEl = document.getElementById('ai-pending');
+      var contentEl = document.getElementById('ai-content');
+      var timer = setInterval(function () {
+        fetch('/story/' + sid + '/ai_status')
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.status !== 'idle') return;          // 仍在生成，下次再查
+            clearInterval(timer);
+            contentEl.innerHTML = '';
+            var paras = (d.paragraphs && d.paragraphs.length) ? d.paragraphs : ['（暂无正文）'];
+            paras.forEach(function (p) {
+              var el = document.createElement('p');
+              el.textContent = p;                     // 用 textContent 防 XSS
+              contentEl.appendChild(el);
+            });
+            if (pendingEl) pendingEl.hidden = true;    // 去掉"生成中"标识
+          })
+          .catch(function () { /* 单次轮询失败忽略，下次继续 */ });
+      }, 2000);
+    })();
+  </script>
 
   {# ② 接龙入口（占位输入框 → 跳转发布页） #}
   {% if story.status == 'finished' %}
