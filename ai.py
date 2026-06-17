@@ -97,7 +97,11 @@ def _deepseek_chat(prompt, max_tokens=2000):
         detail = e.read().decode("utf-8", "ignore")[:300]
         raise RuntimeError(f"DeepSeek HTTP {e.code}: {detail}") from None
     # DeepSeek 推理模型会返回 reasoning_content（思考）+ content（正文），只取 content
-    return data["choices"][0]["message"]["content"].strip()
+    content = (data["choices"][0]["message"].get("content") or "").strip()
+    if not content:
+        # 推理占满 max_tokens 时 content 可能为空；视为失败以回退 mock，避免缓存空值/无限轮询
+        raise RuntimeError("DeepSeek 返回空 content（max_tokens 可能被 reasoning 占满）")
+    return content
 
 
 def _stitch_deepseek(opening, segments):
