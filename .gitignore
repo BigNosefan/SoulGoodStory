@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 运行时数据库（首次运行自动重建并写入示例数据）
+goodstory.db
+
+# 操作系统
+.DS_Store

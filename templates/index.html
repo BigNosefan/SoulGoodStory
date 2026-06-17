@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1 class="page-title">故事接龙</h1>
+  <p class="subtitle">系统或用户起一个开头，大家一句句接龙，AI 把碎片串成完整故事。</p>
+
+  {% if stories %}
+    <ul class="story-list">
+      {% for s in stories %}
+        <li class="card">
+          <a class="card-link" href="{{ url_for('story_detail', story_id=s.id) }}">
+            <div class="card-head">
+              <span class="card-title">{{ s.title }}</span>
+              <span class="badge {{ 'badge-done' if s.status == 'finished' else 'badge-live' }}">
+                {{ '已完结' if s.status == 'finished' else '进行中' }}
+              </span>
+            </div>
+            <p class="card-summary">
+              {{ (s.ai_content or '')[:60] }}{% if (s.ai_content or '')|length > 60 %}…{% endif %}
+            </p>
+            <div class="card-meta">
+              <span>🧩 接龙 {{ s.block_count or 0 }}</span>
+              <span>👥 {{ s.participant_count or 0 }} 人</span>
+              <span>✍️ {{ s.creator_name }}</span>
+              <span>🕘 {{ s.updated_at }}</span>
+            </div>
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">还没有故事，来发布第一个开头吧！</div>
+  {% endif %}
+
+  <a class="fab" href="{{ url_for('publish') }}" title="发布故事">＋ 发布故事</a>
+{% endblock %}

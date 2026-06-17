@@ -1,0 +1,6 @@
+# 必需：Web 框架（含 Jinja2 模板）。已在 Flask 2.3 / 3.x 上验证可运行。
+Flask>=2.3
+
+# 可选：启用真实 AI 串联时需要（设置 ANTHROPIC_API_KEY 后生效）。
+# 不安装也能运行 —— 默认使用内置 mock 串联器。
+anthropic>=0.40

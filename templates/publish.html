@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ '接龙' if mode == 'relay' else '发布故事' }} · 好故事{% endblock %}
+{% block content %}
+  <a class="back" href="{{ url_for('story_detail', story_id=story.id) if mode == 'relay' else url_for('index') }}">← 返回</a>
+  <h1 class="page-title">{{ '接龙' if mode == 'relay' else '发布新故事' }}</h1>
+
+  {% if mode == 'relay' %}
+    <div class="relay-context">
+      <div class="ctx-label">你正在接龙：</div>
+      <div class="ctx-title">{{ story.title }}</div>
+      {% if tail %}
+        <div class="ctx-tail">
+          上一句（{{ '开头' if tail.sequence == 0 else '第 ' ~ tail.sequence ~ ' 段' }} · {{ tail.author_name }}）：{{ tail.raw_content }}
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <form class="publish-form" method="post" action="{{ url_for('publish') }}">
+    {% if mode == 'relay' %}
+      <input type="hidden" name="story_id" value="{{ story.id }}">
+      <input type="hidden" name="expected_sequence" value="{{ tail.sequence if tail else 0 }}">
+    {% endif %}
+    <textarea id="content" name="content" maxlength="{{ maxlen }}" rows="4"
+      placeholder="{{ '接下去会发生什么？（≤ %d 字）'|format(maxlen) if mode == 'relay' else '写下你的故事开头……（≤ %d 字）'|format(maxlen) }}"
+      oninput="document.getElementById('cc').textContent = this.value.length"></textarea>
+    <div class="counter"><span id="cc">0</span> / {{ maxlen }} 字</div>
+    <button class="btn-primary" type="submit">{{ '提交接龙' if mode == 'relay' else '发布' }}</button>
+  </form>
+{% endblock %}

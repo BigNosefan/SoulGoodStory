@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}登录 · 好故事{% endblock %}
+{% block content %}
+  <a class="back" href="{{ url_for('index') }}">← 返回首页</a>
+  <h1 class="page-title">登录</h1>
+  <p class="subtitle">输入一个昵称即可参与接龙（demo 简化登录，无需密码）。</p>
+
+  <form class="publish-form" method="post" action="{{ url_for('login', next=request.args.get('next', '')) }}">
+    <input class="text-input" type="text" name="nickname" maxlength="20"
+           placeholder="你的昵称" autofocus>
+    <button class="btn-primary" type="submit">进入</button>
+  </form>
+{% endblock %}

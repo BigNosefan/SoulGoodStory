@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ story.title }} · 好故事{% endblock %}
+{% block content %}
+  <a class="back" href="{{ url_for('index') }}">← 返回首页</a>
+
+  <div class="story-header">
+    <h1 class="page-title">{{ story.title }}</h1>
+    <span class="badge {{ 'badge-done' if story.status == 'finished' else 'badge-live' }}">
+      {{ '已完结' if story.status == 'finished' else '进行中' }}
+    </span>
+  </div>
+
+  <div class="meta-row">
+    <span>🧩 接龙 {{ story.block_count or 0 }} / {{ max_blocks }}</span>
+    <span>👥 {{ story.participant_count or 0 }} 人</span>
+    <span>✍️ 发起人 {{ story.creator_name }}</span>
+  </div>
+
+  {# ① AI 串联故事正文 #}
+  <section class="ai-box">
+    <div class="ai-tag">✨ 本故事由 AI 串联生成</div>
+    <div class="ai-content">
+      {% for para in (story.ai_content or '').split('\n\n') %}
+        {% if para %}<p>{{ para }}</p>{% endif %}
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ② 接龙入口（占位输入框 → 跳转发布页） #}
+  {% if story.status == 'finished' %}
+    <div class="relay-entry disabled">故事已完结，无法接龙</div>
+  {% elif not user %}
+    <a class="relay-entry" href="{{ url_for('login', next=url_for('publish', story_id=story.id)) }}">
+      登录后接下去写一句…
+    </a>
+  {% elif consecutive %}
+    <div class="relay-entry disabled">请等待其他人接龙后再继续（不能连续接龙）</div>
+  {% else %}
+    <a class="relay-entry" href="{{ url_for('publish', story_id=story.id) }}">
+      接下去会发生什么？点此接龙（≤ {{ relay_max }} 字）
+    </a>
+  {% endif %}
+
+  {% if is_creator and story.status != 'finished' %}
+    <form class="finish-form" method="post" action="{{ url_for('finish', story_id=story.id) }}">
+      <button class="btn-secondary" type="submit"
+        onclick="return confirm('确定要完结这个故事吗？完结后将无法继续接龙。')">完结故事</button>
+    </form>
+  {% endif %}
+
+  {# ③ 用户接龙记录（原始片段，不可篡改） #}
+  <section class="records">
+    <h2 class="section-title">接龙记录</h2>
+    <ol class="block-list">
+      {% for b in blocks %}
+        <li class="block-item">
+          <div class="block-seq">{{ '开头' if b.sequence == 0 else b.sequence }}</div>
+          <div class="block-body">
+            <div class="block-content">{{ b.raw_content }}</div>
+            <div class="block-foot">
+              {{ b.author_name }}{% if b.sequence == 0 %}（创世段）{% endif %} · {{ b.created_at }}
+            </div>
+          </div>
+        </li>
+      {% endfor %}
+    </ol>
+  </section>
+{% endblock %}
