@@ -181,6 +181,7 @@ body::after {
 .ai-placeholder { color: var(--muted); }
 .ai-pending { color: var(--cyan); font-size: 12px; margin-left: 8px; display: inline-flex; align-items: center; }
 .ai-pending::before { content: ""; width: 11px; height: 11px; margin-right: 6px; border-radius: 50%; border: 2px solid rgba(34, 211, 238, .25); border-top-color: var(--cyan); animation: spin .8s linear infinite; }
+.ai-pending[hidden] { display: none; }  /* 修复：上面的 display:inline-flex 会让 hidden 属性失效，必须显式藏掉 */
 
 /* 接龙入口 */
 .relay-entry {
@@ -223,6 +224,13 @@ body::after {
 .ctx-label { color: var(--faint); font-size: 12px; font-family: var(--mono); letter-spacing: 1px; text-transform: uppercase; }
 .ctx-title { font-weight: 600; margin: 6px 0; }
 .ctx-tail { color: #b7c1de; font-size: 14px; }
+.ctx-list { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 7px; }
+.ctx-item { display: flex; gap: 10px; font-size: 14px; color: #b7c1de; line-height: 1.6; }
+.ctx-item.ctx-hidden { display: none; }
+.ctx-seq { flex: 0 0 auto; min-width: 30px; font-family: var(--mono); font-size: 11px; color: var(--faint); padding-top: 2px; }
+.ctx-text { flex: 1; }
+.ctx-toggle { margin-top: 12px; background: var(--surface); border: 1px solid var(--border); color: var(--cyan); border-radius: 999px; padding: 6px 14px; font-size: 12px; font-family: var(--font); cursor: pointer; transition: .15s; }
+.ctx-toggle:hover { border-color: var(--cyan); box-shadow: 0 0 14px rgba(34, 211, 238, .2); }
 
 .publish-form {
   display: flex; flex-direction: column; gap: 12px; background: var(--surface);

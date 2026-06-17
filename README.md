@@ -1,4 +1,4 @@
-# 好故事（GoodStory）Demo
+# Soul Good Story Demo
 
 一个由 AI 驱动的「区块链式」故事接龙 demo：系统/用户起一个开头，大家一句句接龙（限字数），AI 把碎片串成一篇连贯故事。
 

@@ -1,17 +1,29 @@
 {% extends "base.html" %}
-{% block title %}{{ '接龙' if mode == 'relay' else '发布故事' }} · 好故事{% endblock %}
+{% block title %}{{ '接龙' if mode == 'relay' else '发布故事' }} · Soul Good Story{% endblock %}
 {% block content %}
   <a class="back" href="{{ url_for('story_detail', story_id=story.id) if mode == 'relay' else url_for('index') }}">← 返回</a>
   <h1 class="page-title">{{ '接龙' if mode == 'relay' else '发布新故事' }}</h1>
 
   {% if mode == 'relay' %}
     <div class="relay-context">
-      <div class="ctx-label">你正在接龙：</div>
+      <div class="ctx-label">你正在接龙</div>
       <div class="ctx-title">{{ story.title }}</div>
-      {% if tail %}
-        <div class="ctx-tail">
-          上一句（{{ '开头' if tail.sequence == 0 else '第 ' ~ tail.sequence ~ ' 段' }} · {{ tail.author_name }}）：{{ tail.raw_content }}
-        </div>
+
+      {% if blocks %}
+        {% set total = blocks | length %}
+        {% set hide_before = total - 5 %}
+        <div class="ctx-label" style="margin-top: 12px;">接龙上文 · 共 {{ total }} 条</div>
+        <ol class="ctx-list" id="ctx-list">
+          {% for b in blocks %}
+            <li class="ctx-item{% if loop.index0 < hide_before %} ctx-hidden{% endif %}">
+              <span class="ctx-seq">{{ '开头' if b.sequence == 0 else b.sequence }}</span>
+              <span class="ctx-text">{{ b.raw_content }}</span>
+            </li>
+          {% endfor %}
+        </ol>
+        {% if total > 5 %}
+          <button type="button" class="ctx-toggle" id="ctx-toggle" data-expanded="0">▾ 展开全部 {{ total }} 条</button>
+        {% endif %}
       {% endif %}
     </div>
   {% endif %}
@@ -27,4 +39,23 @@
     <div class="counter"><span id="cc">0</span> / {{ maxlen }} 字</div>
     <button class="btn-primary" type="submit">{{ '提交接龙' if mode == 'relay' else '发布' }}</button>
   </form>
+
+  {% if mode == 'relay' and blocks and blocks | length > 5 %}
+  <script>
+    (function () {
+      var t = document.getElementById('ctx-toggle');
+      if (!t) return;
+      t.addEventListener('click', function () {
+        var items = Array.prototype.slice.call(document.querySelectorAll('#ctx-list .ctx-item'));
+        var hideBefore = items.length - 5;
+        var expanded = t.dataset.expanded === '1';
+        items.forEach(function (li, i) {
+          if (i < hideBefore) li.classList.toggle('ctx-hidden', expanded);  // 已展开→重新折叠；已折叠→展开
+        });
+        t.dataset.expanded = expanded ? '0' : '1';
+        t.textContent = expanded ? ('▾ 展开全部 ' + items.length + ' 条') : '▴ 收起';
+      });
+    })();
+  </script>
+  {% endif %}
 {% endblock %}

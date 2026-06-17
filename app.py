@@ -78,6 +78,14 @@ def kick_ai(story_id):
     threading.Thread(target=_generate_ai, args=(story_id,), daemon=True).start()
 
 
+def recover_pending():
+    """启动时重跑遗留的"生成中"故事：后台线程随进程退出而中断，
+    会留下 ai_status=pending 的孤儿，页面就会一直转圈。重启时重新触发即可。"""
+    for s in db.list_stories():
+        if s.get("ai_status") == "pending":
+            kick_ai(s["id"])
+
+
 # ---------- 首页 ----------
 
 @app.route("/")
@@ -188,12 +196,13 @@ def publish():
         if story["status"] != "ongoing":
             flash("故事已完结，无法接龙")
             return redirect(url_for("story_detail", story_id=story_id))
-        tail = db.get_tail(story_id)
+        blocks = db.get_blocks(story_id)
+        tail = blocks[-1] if blocks else None
         if tail and tail["author_id"] == user["id"]:
             flash("不能连续接龙，请等待其他人接龙后再继续")
             return redirect(url_for("story_detail", story_id=story_id))
         return render_template(
-            "publish.html", mode="relay", story=story, tail=tail,
+            "publish.html", mode="relay", story=story, tail=tail, blocks=blocks,
             user=user, maxlen=db.MAX_RELAY,
         )
 
@@ -251,6 +260,7 @@ def ensure_seed():
 
 db.init_db()
 ensure_seed()
+recover_pending()
 
 
 if __name__ == "__main__":
