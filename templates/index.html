@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
-  <h1 class="page-title">故事接龙</h1>
-  <p class="subtitle">系统或用户起一个开头，大家一句句接龙，AI 把碎片串成完整故事。</p>
+  <section class="hero">
+    <span class="hero-badge"><i class="dot"></i>{{ ai_provider }} 驱动</span>
+    <h1 class="hero-title">故事接龙</h1>
+    <p class="hero-sub">系统或用户起一个开头，大家一句句接龙，AI 把碎片串成完整故事。</p>
+  </section>
 
   {% if stories %}
     <ul class="story-list">

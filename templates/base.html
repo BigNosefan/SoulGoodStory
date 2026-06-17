@@ -4,14 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}好故事{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="{{ url_for('index') }}">📖 好故事</a>
+    <a class="brand" href="{{ url_for('index') }}">
+      <span class="logo">好</span>
+      <span class="name">好故事</span>
+    </a>
     <nav class="user-area">
       {% if user %}
-        <span class="hi">👤 {{ user.nickname }}</span>
+        <span class="hi">{{ user.nickname }}</span>
         <a class="link" href="{{ url_for('logout') }}">退出</a>
       {% else %}
         <a class="link" href="{{ url_for('login') }}">登录</a>
@@ -30,5 +36,7 @@
 
     {% block content %}{% endblock %}
   </main>
+
+  <footer class="footer">⛓ 区块链式 AI 故事接龙 · demo</footer>
 </body>
 </html>

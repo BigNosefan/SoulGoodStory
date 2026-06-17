@@ -20,7 +20,7 @@
   <section class="ai-box" id="ai-box" data-story-id="{{ story.id }}" data-status="{{ story.ai_status }}">
     <div class="ai-tag">
       ✨ 本故事由 {{ ai_provider }} 串联生成
-      <span class="ai-pending" id="ai-pending"{% if story.ai_status != 'pending' %} hidden{% endif %}>· 🌀 生成中…</span>
+      <span class="ai-pending" id="ai-pending"{% if story.ai_status != 'pending' %} hidden{% endif %}>生成中…</span>
     </div>
     <div class="ai-content" id="ai-content">
       {% if story.ai_content %}
@@ -86,7 +86,7 @@
     <ol class="block-list">
       {% for b in blocks %}
         <li class="block-item">
-          <div class="block-seq">{{ '开头' if b.sequence == 0 else b.sequence }}</div>
+          <div class="block-seq{% if b.sequence == 0 %} is-genesis{% endif %}">{{ 0 if b.sequence == 0 else b.sequence }}</div>
           <div class="block-body">
             <div class="block-content">{{ b.raw_content }}</div>
             <div class="block-foot">
