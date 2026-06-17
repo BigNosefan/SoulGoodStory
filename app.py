@@ -86,6 +86,39 @@ def recover_pending():
             kick_ai(s["id"])
 
 
+# 单条接龙的 AI 辣评：异步生成，最多并发 4 条，同一块同时只生成一次
+_REVIEW_SEMA = threading.Semaphore(4)
+_reviewing = set()
+_reviewing_lock = threading.Lock()
+
+
+def _generate_review(block_id):
+    blk = db.get_block(block_id)
+    if not blk or blk["sequence"] < 1:
+        return
+    blocks = db.get_blocks(blk["story_id"])
+    opening = blocks[0]["raw_content"] if blocks else ""
+    prev = [b["raw_content"] for b in blocks if 1 <= b["sequence"] < blk["sequence"]]
+    db.set_block_review(block_id, ai.review(opening, prev, blk["raw_content"]))
+
+
+def kick_review(block_id):
+    with _reviewing_lock:
+        if block_id in _reviewing:
+            return
+        _reviewing.add(block_id)
+
+    def run():
+        try:
+            with _REVIEW_SEMA:
+                _generate_review(block_id)
+        finally:
+            with _reviewing_lock:
+                _reviewing.discard(block_id)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 # ---------- 首页 ----------
 
 @app.route("/")
@@ -130,6 +163,8 @@ def story_detail(story_id):
     for b in blocks:  # 把每条接龙的好评/差评数与"我的投票"挂到 block 上
         c = counts.get(b["id"], {"good": 0, "bad": 0})
         b["good"], b["bad"], b["mine"] = c["good"], c["bad"], mine.get(b["id"])
+        if b["sequence"] >= 1 and not b["ai_review"]:
+            kick_review(b["id"])  # 没有辣评的接龙，进页面即开始异步生成
     tail = blocks[-1] if blocks else None
     is_creator = bool(user and user["id"] == story["creator_id"])
     consecutive = bool(user and tail and tail["author_id"] == user["id"])
@@ -176,6 +211,8 @@ def publish():
                 flash(RELAY_ERRORS.get(res["error"], "接龙失败"))
                 return redirect(url_for("story_detail", story_id=story_id))
             kick_ai(story_id)  # 接龙已落盘，AI 串联异步进行
+            if res.get("block_id"):
+                kick_review(res["block_id"])  # 这条接龙的 AI 辣评也异步生成
             flash("接龙成功，故事已达上限并完结！" if res.get("finished") else "接龙成功！")
             return redirect(url_for("story_detail", story_id=story_id))
 
@@ -241,6 +278,16 @@ def rate(block_id):
         "bad": counts["bad"],
         "mine": db.get_user_vote(block_id, user["id"]),
     }
+
+
+@app.route("/block/<int:block_id>/review")
+def block_review(block_id):
+    blk = db.get_block(block_id)
+    if not blk:
+        abort(404)
+    if not blk["ai_review"]:
+        kick_review(block_id)  # 还没生成就触发
+    return {"ready": bool(blk["ai_review"]), "review": blk["ai_review"]}
 
 
 # ---------- 启动：建表 + 首次种子数据 ----------

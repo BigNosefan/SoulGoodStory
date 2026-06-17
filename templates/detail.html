@@ -87,20 +87,28 @@
       {% for b in blocks %}
         <li class="block-item">
           <div class="block-seq{% if b.sequence == 0 %} is-genesis{% endif %}">{{ 0 if b.sequence == 0 else b.sequence }}</div>
-          <div class="block-body">
-            <div class="block-content">{{ b.raw_content }}</div>
-            <div class="block-foot">
-              {{ b.author_name }}{% if b.sequence == 0 %}（创世段）{% endif %} · {{ b.created_at }}
+          <div class="block-main">
+            <div class="block-body">
+              <div class="block-content">{{ b.raw_content }}</div>
+              <div class="block-foot">
+                {{ b.author_name }}{% if b.sequence == 0 %}（创世段）{% endif %} · {{ b.created_at }}
+              </div>
+              {% if b.sequence >= 1 %}
+              <div class="block-actions">
+                <button class="rate-btn good{% if b.mine == 'good' %} active{% endif %}" data-block="{{ b.id }}" data-kind="good">
+                  👍 {{ good_reviews | random }} <span class="rate-count" data-count>{{ b.good }}</span>
+                </button>
+                <button class="rate-btn bad{% if b.mine == 'bad' %} active{% endif %}" data-block="{{ b.id }}" data-kind="bad">
+                  👎 {{ bad_reviews | random }} <span class="rate-count" data-count>{{ b.bad }}</span>
+                </button>
+              </div>
+              {% endif %}
             </div>
             {% if b.sequence >= 1 %}
-            <div class="block-actions">
-              <button class="rate-btn good{% if b.mine == 'good' %} active{% endif %}" data-block="{{ b.id }}" data-kind="good">
-                👍 {{ good_reviews | random }} <span class="rate-count" data-count>{{ b.good }}</span>
-              </button>
-              <button class="rate-btn bad{% if b.mine == 'bad' %} active{% endif %}" data-block="{{ b.id }}" data-kind="bad">
-                👎 {{ bad_reviews | random }} <span class="rate-count" data-count>{{ b.bad }}</span>
-              </button>
-            </div>
+            <aside class="ai-review" data-block="{{ b.id }}"{% if b.ai_review %} data-ready="1"{% endif %}>
+              <div class="ai-review-tag">🌶️ AI辣评</div>
+              <div class="ai-review-text">{{ b.ai_review if b.ai_review else 'AI 正在辣评……' }}</div>
+            </aside>
             {% endif %}
           </div>
         </li>
@@ -135,5 +143,28 @@
         })
         .finally(function () { btn.disabled = false; });
     });
+  </script>
+
+  <script>
+    // AI 辣评：对还没生成的接龙轮询，生成好了就填进去
+    (function () {
+      var pend = Array.prototype.slice.call(document.querySelectorAll('.ai-review:not([data-ready])'));
+      if (!pend.length) return;
+      var timer = setInterval(function () {
+        pend = pend.filter(function (el) { return !el.dataset.ready; });
+        if (!pend.length) { clearInterval(timer); return; }
+        pend.forEach(function (el) {
+          fetch('/block/' + el.dataset.block + '/review')
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d && d.ready && d.review) {
+                el.querySelector('.ai-review-text').textContent = d.review;
+                el.dataset.ready = '1';
+              }
+            })
+            .catch(function () {});
+        });
+      }, 2500);
+    })();
   </script>
 {% endblock %}

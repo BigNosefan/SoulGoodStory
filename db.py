@@ -57,6 +57,7 @@ def init_db():
             raw_content TEXT NOT NULL,
             author_id   INTEGER NOT NULL REFERENCES users(id),
             created_at  TEXT NOT NULL,
+            ai_review   TEXT NOT NULL DEFAULT '',
             UNIQUE(story_id, sequence)
         );
 
@@ -74,6 +75,9 @@ def init_db():
     cols = [r[1] for r in conn.execute("PRAGMA table_info(stories)").fetchall()]
     if "ai_status" not in cols:
         conn.execute("ALTER TABLE stories ADD COLUMN ai_status TEXT NOT NULL DEFAULT 'idle'")
+    bcols = [r[1] for r in conn.execute("PRAGMA table_info(blocks)").fetchall()]
+    if "ai_review" not in bcols:
+        conn.execute("ALTER TABLE blocks ADD COLUMN ai_review TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -211,6 +215,20 @@ def get_tail(story_id):
     return dict(row) if row else None
 
 
+def get_block(block_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM blocks WHERE id = ?", (block_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def set_block_review(block_id, text):
+    conn = get_db()
+    conn.execute("UPDATE blocks SET ai_review = ? WHERE id = ?", (text, block_id))
+    conn.commit()
+    conn.close()
+
+
 def add_block(story_id, expected_sequence, content, author_id):
     """追加一个接龙片段。
 
@@ -250,6 +268,7 @@ def add_block(story_id, expected_sequence, content, author_id):
             "VALUES (?, ?, ?, ?, ?)",
             (story_id, new_seq, content, author_id, ts),
         )
+        new_block_id = cur.lastrowid
         finished = new_seq >= MAX_BLOCKS
         new_status = "finished" if finished else "ongoing"
         cur.execute(
@@ -257,7 +276,7 @@ def add_block(story_id, expected_sequence, content, author_id):
             (ts, new_status, story_id),
         )
         conn.commit()
-        return {"ok": True, "sequence": new_seq, "finished": finished}
+        return {"ok": True, "sequence": new_seq, "finished": finished, "block_id": new_block_id}
     except sqlite3.IntegrityError:
         # 并发抢同一 sequence
         return {"ok": False, "error": "conflict"}
