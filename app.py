@@ -12,8 +12,31 @@ from flask import (
 import db
 import ai
 
+
+def _load_dotenv():
+    """轻量读取项目根目录 .env（KEY=VALUE），不覆盖已存在的环境变量。无需第三方依赖。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("GOODSTORY_SECRET", "dev-secret-change-me")
+
+
+@app.context_processor
+def _inject_ai_provider():
+    # 让所有模板都能显示"当前用的是哪个串联引擎"
+    return {"ai_provider": ai.provider_label()}
 
 # 接龙失败原因 -> 用户提示
 RELAY_ERRORS = {

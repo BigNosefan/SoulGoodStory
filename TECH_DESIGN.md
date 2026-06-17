@@ -115,9 +115,12 @@ blocks
 
 ## 5. AI 串联设计
 
-`ai.stitch(opening, segments)`：
-- **默认 mock**：将开头 + 片段规范标点、插入过渡词（"接着""突然""就在这时"…）、按段落聚合，产出连贯正文。无需任何 Key。
-- **可选真实模型**：设置环境变量 `ANTHROPIC_API_KEY` 即自动启用；用官方 `anthropic` SDK 调 `client.messages.create`，默认模型 `claude-opus-4-8`（可用 `GOODSTORY_MODEL` 覆盖，如改 `claude-haiku-4-5` 更快更省）。调用失败自动回退 mock，保证 demo 不中断。
+`ai.stitch(opening, segments)` 按环境变量自动选择引擎，优先级 **DeepSeek > Claude > mock**，任何真实调用失败都回退 mock，保证 demo 不中断：
+- **DeepSeek**（设 `DEEPSEEK_API_KEY`）：OpenAI 兼容接口，用 Python 标准库 `urllib` POST `…/chat/completions`，**无需额外依赖**；默认模型 `deepseek-chat`，本项目用 `GOODSTORY_MODEL=deepseek-v4-flash`。注意该推理模型返回 `reasoning_content`（思考）+ `content`（正文），代码只取 `content`。
+- **Claude**（设 `ANTHROPIC_API_KEY`）：官方 `anthropic` SDK 调 `client.messages.create`，默认 `claude-opus-4-8`。
+- **mock（默认）**：规则串联（规范标点 + 过渡词 + 分段），无需任何 Key。
+
+Key 通过项目根目录 `.env` 提供（`app.py` 启动时轻量加载，无第三方依赖），`.env` 已被 `.gitignore` 忽略，**不进仓库**；`.env.example` 为模板。详情页顶部显示当前实际使用的引擎。
 
 ---
 
@@ -139,7 +142,7 @@ export GOODSTORY_MODEL=claude-haiku-4-5   # 可选：更快更省
 python app.py
 ```
 
-环境变量：`PORT`（默认 5001）、`ANTHROPIC_API_KEY`（启用真实 AI）、`GOODSTORY_MODEL`（默认 `claude-opus-4-8`）、`GOODSTORY_SECRET`（session 密钥）。
+环境变量（可写入 `.env`）：`PORT`（默认 5001）、`DEEPSEEK_API_KEY`（启用 DeepSeek）、`ANTHROPIC_API_KEY`（启用 Claude）、`GOODSTORY_MODEL`（DeepSeek 默认 `deepseek-chat`、Claude 默认 `claude-opus-4-8`）、`DEEPSEEK_BASE_URL`、`GOODSTORY_SECRET`（session 密钥）。
 
 ---
 

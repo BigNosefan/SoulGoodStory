@@ -27,22 +27,33 @@ python app.py
 
 ## AI 串联
 
-- **默认**：内置 mock 串联器，零依赖、无需任何 Key。
-- **可选真实模型**：设置 API Key 后自动启用，失败自动回退 mock。
+按环境变量自动选择引擎（优先级 **DeepSeek > Claude > mock**），任何真实调用失败都会自动回退 mock，详情页会显示当前用的是哪个引擎。
+
+- **mock（默认）**：内置规则串联器，零依赖、无需任何 Key。
+- **DeepSeek（推荐）**：OpenAI 兼容接口，用 Python 标准库调用，**无需额外装包**。
+- **Claude**：需 `pip install anthropic`。
+
+把 `.env.example` 复制为 `.env` 填入 key（`.env` 已被 git 忽略，不会提交），启动时自动加载：
 
 ```bash
-export ANTHROPIC_API_KEY=sk-...            # 启用真实 AI 串联
-export GOODSTORY_MODEL=claude-haiku-4-5    # 可选，默认 claude-opus-4-8
+cp .env.example .env
+# 编辑 .env：
+#   DEEPSEEK_API_KEY=sk-...
+#   GOODSTORY_MODEL=deepseek-v4-flash
 python app.py
 ```
 
-## 环境变量
+也可直接用环境变量：`DEEPSEEK_API_KEY=sk-... GOODSTORY_MODEL=deepseek-v4-flash python app.py`
+
+## 环境变量（也可写入 .env）
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `PORT` | `5001` | 服务端口 |
-| `ANTHROPIC_API_KEY` | 无 | 设置后启用真实 AI 串联 |
-| `GOODSTORY_MODEL` | `claude-opus-4-8` | 真实串联使用的模型 |
+| `DEEPSEEK_API_KEY` | 无 | 设置后启用 DeepSeek 串联 |
+| `ANTHROPIC_API_KEY` | 无 | 设置后启用 Claude 串联（DeepSeek 优先） |
+| `GOODSTORY_MODEL` | 按引擎 | 模型名（DeepSeek 默认 `deepseek-chat`，Claude 默认 `claude-opus-4-8`） |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 接口地址 |
 | `GOODSTORY_SECRET` | `dev-secret-change-me` | Flask session 密钥 |
 
 ## 说明

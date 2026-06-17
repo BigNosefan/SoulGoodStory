@@ -18,7 +18,7 @@
 
   {# ① AI 串联故事正文 #}
   <section class="ai-box">
-    <div class="ai-tag">✨ 本故事由 AI 串联生成</div>
+    <div class="ai-tag">✨ 本故事由 {{ ai_provider }} 串联生成</div>
     <div class="ai-content">
       {% for para in (story.ai_content or '').split('\n\n') %}
         {% if para %}<p>{{ para }}</p>{% endif %}
