@@ -107,7 +107,7 @@ body::after {
   background: linear-gradient(120deg, #eaf1ff 10%, #8ab8ff 45%, #c9a6ff 80%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-.hero-sub { color: var(--muted); margin: 0; max-width: 46ch; }
+.hero-sub { color: var(--muted); margin: 0; white-space: nowrap; }
 
 /* ===== Flash ===== */
 .flash { margin-bottom: 16px; }
