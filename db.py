@@ -102,6 +102,7 @@ def _story_dict(d):
         "status": d.get("status", "ongoing"),
         "ai_content": d.get("ai_content", ""),
         "ai_status": d.get("ai_status", "idle"),
+        "ai_source": d.get("ai_source", ""),   # deepseek / claude / mock（空=旧数据，视为已就绪不重试）
         "block_count": int(d.get("block_count", 0)),
         "participant_count": int(d.get("participant_count", 0)),
         "created_at": d.get("created_at", ""),
@@ -119,6 +120,7 @@ def _block_dict(d):
         "author_name": d.get("author_name", ""),
         "created_at": d.get("created_at", ""),
         "ai_review": d.get("ai_review", ""),
+        "review_source": d.get("review_source", ""),  # deepseek / mock（空=旧数据，视为已就绪）
     }
 
 
@@ -190,6 +192,11 @@ def update_ai_content(story_id, text):
     r("HSET", _k("story", story_id), "ai_content", text)
 
 
+def set_ai_result(story_id, text, source):
+    """写入正文并记录来源（deepseek/claude/mock）。"""
+    r("HSET", _k("story", story_id), "ai_content", text, "ai_source", source)
+
+
 def set_ai_status(story_id, status):
     r("HSET", _k("story", story_id), "ai_status", status)
 
@@ -230,8 +237,8 @@ def get_block(block_id):
     return _block_dict(d) if d else None
 
 
-def set_block_review(block_id, text):
-    r("HSET", _k("block", block_id), "ai_review", text)
+def set_block_review(block_id, text, source=""):
+    r("HSET", _k("block", block_id), "ai_review", text, "review_source", source)
 
 
 def add_block(story_id, expected_sequence, content, author_id):

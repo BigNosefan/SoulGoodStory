@@ -80,7 +80,8 @@ def _generate_ai(story_id):
         if blocks:
             opening = blocks[0]["raw_content"]
             segments = [b["raw_content"] for b in blocks[1:]]
-            db.update_ai_content(story_id, ai.stitch(opening, segments))
+            text, source = ai.stitch(opening, segments)
+            db.set_ai_result(story_id, text, source)   # 同时记录来源(deepseek/mock)
     finally:
         db.set_ai_status(story_id, "idle")
 
@@ -93,8 +94,8 @@ def _generate_review(block_id):
     blocks = db.get_blocks(blk["story_id"])
     opening = blocks[0]["raw_content"] if blocks else ""
     prev = [b["raw_content"] for b in blocks if 1 <= b["sequence"] < blk["sequence"]]
-    text = ai.review(opening, prev, blk["raw_content"])
-    db.set_block_review(block_id, text)
+    text, source = ai.review(opening, prev, blk["raw_content"])
+    db.set_block_review(block_id, text, source)
     return text
 
 
@@ -147,6 +148,11 @@ def story_data(story_id):
     story = db.get_story(story_id)
     if not story:
         return {"ok": False}, 404
+    real = ai.active_provider() != "mock"   # 当前是否配了真实引擎
+    # 正文若是 mock 兜底产生的、且现在有真实引擎 → 标记待生成，前端轮询时会重连 DeepSeek
+    if real and story["ai_status"] == "idle" and story["ai_source"] == "mock":
+        db.set_ai_status(story_id, "pending")
+        story["ai_status"] = "pending"
     blocks = db.get_blocks(story_id)
     user = current_user()
     counts, mine = db.get_ratings(story_id, user["id"] if user else None)
@@ -154,10 +160,12 @@ def story_data(story_id):
     block_list = []
     for b in blocks:
         c = counts.get(b["id"], {"good": 0, "bad": 0})
+        # 辣评若是 mock 兜底产生的、且有真实引擎 → 标记未就绪，前端会轮询重新生成
+        review_ready = bool(b["ai_review"]) and not (real and b["review_source"] == "mock")
         block_list.append({
             "id": b["id"], "sequence": b["sequence"], "raw_content": b["raw_content"],
             "author_name": b["author_name"], "created_at": b["created_at"],
-            "is_genesis": b["sequence"] == 0, "ai_review": b["ai_review"],
+            "is_genesis": b["sequence"] == 0, "ai_review": b["ai_review"], "review_ready": review_ready,
             "good": c["good"], "bad": c["bad"], "mine": mine.get(b["id"]),
         })
     return {
@@ -288,10 +296,14 @@ def block_review(block_id):
     blk = db.get_block(block_id)
     if not blk:
         abort(404)
+    if blk["sequence"] < 1:
+        return {"ready": True, "review": ""}
     review = blk["ai_review"]
-    if not review and blk["sequence"] >= 1:   # 按需同步生成
+    real = ai.active_provider() != "mock"
+    # 没有辣评，或之前是 mock 兜底且现在有真实引擎 → 重新生成（每次访问最多一次）
+    if (not review) or (real and blk["review_source"] == "mock"):
         review = _generate_review(block_id)
-    return {"ready": bool(review), "review": review or ""}
+    return {"ready": True, "review": review or ""}
 
 
 # ---------- 启动：建表 + 首次种子数据 ----------

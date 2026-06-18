@@ -48,16 +48,17 @@ def provider_label():
 
 
 def stitch(opening, segments):
-    """opening: 开头字符串；segments: 接龙片段字符串列表（不含开头）。返回正文字符串。"""
+    """返回 (正文, 来源)，来源 ∈ deepseek / claude / mock。"""
     provider = active_provider()
-    try:
-        if provider == "deepseek":
-            return _stitch_deepseek(opening, segments)
-        if provider == "claude":
-            return _stitch_claude(opening, segments)
-    except Exception as e:  # 网络/鉴权/模型等任何问题都回退 mock
-        print(f"[ai] {provider} 调用失败，回退 mock 串联：{e}")
-    return _stitch_mock(opening, segments)
+    if provider != "mock":
+        try:
+            if provider == "deepseek":
+                return _stitch_deepseek(opening, segments), provider
+            if provider == "claude":
+                return _stitch_claude(opening, segments), provider
+        except Exception as e:  # 网络/鉴权/模型等任何问题都回退 mock
+            print(f"[ai] {provider} 调用失败，回退 mock 串联：{e}")
+    return _stitch_mock(opening, segments), "mock"
 
 
 def _build_prompt(opening, segments):
@@ -154,13 +155,13 @@ _MOCK_REVIEWS = [
 
 
 def review(opening, prev_segments, target):
-    """结合上文，对单条接龙 target 给出一句"辣评"。"""
+    """返回 (辣评, 来源)，来源 ∈ deepseek / mock。"""
     if os.environ.get("DEEPSEEK_API_KEY"):
         try:
-            return _review_deepseek(opening, prev_segments, target)
+            return _review_deepseek(opening, prev_segments, target), "deepseek"
         except Exception as e:
             print(f"[ai] 辣评调用失败，回退 mock：{e}")
-    return _review_mock(target)
+    return _review_mock(target), "mock"
 
 
 def _review_deepseek(opening, prev_segments, target):

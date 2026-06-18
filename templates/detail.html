@@ -81,7 +81,7 @@
     if (!b.is_genesis) {
       var rev = el('aside', 'ai-review');
       rev.dataset.block = b.id;
-      if (b.ai_review) rev.dataset.ready = '1';
+      if (b.review_ready) rev.dataset.ready = '1';
       rev.appendChild(el('div', 'ai-review-tag', '🌶️ AI辣评'));
       rev.appendChild(el('div', 'ai-review-text', b.ai_review || 'AI 正在辣评……'));
       main.appendChild(rev);
