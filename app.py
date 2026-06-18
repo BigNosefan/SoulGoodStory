@@ -137,8 +137,9 @@ def logout():
 
 @app.route("/story/<int:story_id>")
 def story_detail(story_id):
-    # 只渲染骨架，秒进；数据由前端异步拉 /story/<id>/data，降低点击响应时延
-    return render_template("detail.html", story_id=story_id)
+    # 只渲染骨架，秒进；数据由前端异步拉 /story/<id>/data，降低点击响应时延。
+    # 注意仍要传 user：顶栏登录/退出是服务端渲染的，漏传会导致一直显示"登录"。
+    return render_template("detail.html", story_id=story_id, user=current_user())
 
 
 @app.route("/story/<int:story_id>/data")
