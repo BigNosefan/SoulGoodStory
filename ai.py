@@ -10,6 +10,7 @@
 """
 
 import os
+import re
 import json
 import urllib.request
 import urllib.error
@@ -61,20 +62,75 @@ def stitch(opening, segments):
     return _stitch_mock(opening, segments), "mock"
 
 
+_TAG_RE_AI = re.compile(r"\[\[(\d+)\|([^\]]*)\]\]")
+_PUNCT_RE = re.compile(r"[\s，,。、！!？?：:；;\"'“”‘’「」『』（）()【】—…～~·]")
+
+
+def _dedupe_tags(text):
+    """去掉模型在 [[编号|短语]] 之前重复写出的同一短语（高亮标注导致的句子重复）。
+
+    模型常见错误：先在正文写出短语 X，紧接着又补一个 [[N|X]]，渲染后 X 出现两遍。
+    两种识别（忽略标点/空格后比较）：
+      ① 正文后缀 == 短语前缀（部分重叠，如"穿着凉席"⊂"穿着凉席跳舞"）；
+      ② 正文末段 ≈ 整个短语（中间个别字差异，如"断电"/"断点"），相似度≥70%。
+    命中则删掉正文里重复的那部分，只保留 [[ ]] 内的一份。
+    """
+    if not text or "[[" not in text:
+        return text
+
+    def norm(s):
+        return _PUNCT_RE.sub("", s or "")
+
+    out, last = [], 0
+    for m in _TAG_RE_AI.finditer(text):
+        pre = text[last:m.start()]
+        npn = norm(m.group(2))
+        cut = 0
+        if npn and pre:
+            npre = norm(pre)
+            for L in range(min(len(npre), len(npn)), 0, -1):   # ① 前缀重叠
+                if npre[-L:] == npn[:L]:
+                    cut = L
+                    break
+            if not (cut >= 3 and cut >= len(npn) * 0.5):
+                cut = 0
+            if cut == 0 and len(npn) >= 4 and len(npre) >= len(npn):   # ② 整段模糊
+                tail = npre[-len(npn):]
+                same = sum(1 for a, b in zip(tail, npn) if a == b)
+                if same >= len(npn) * 0.7:
+                    cut = len(npn)
+        if cut:
+            cnt, idx = 0, len(pre)
+            while idx > 0 and cnt < cut:   # 从末尾删掉 cut 个有效字符（跳过标点）
+                idx -= 1
+                if not _PUNCT_RE.match(pre[idx]):
+                    cnt += 1
+            pre = pre[:idx]
+        out.append(pre)
+        out.append(m.group(0))
+        last = m.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _build_prompt(opening, segments):
     seg_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(segments)) or "（暂无接龙）"
+    target = (len(opening) + sum(len(s) for s in segments)) * 4
     return (
-        "这是一个多人故事接龙。请把【开头】和后续【接龙片段】按顺序融合、改写成"
-        "一段连贯流畅、可读性强的中文故事正文。\n"
+        "这是一个多人故事接龙。请把【开头】和后续【接龙片段】按顺序融合、改写并充分扩写成"
+        "一篇连贯流畅、可读性强的中文故事正文。\n"
         "要求：\n"
         "1) 保留每个片段的核心情节与先后顺序；\n"
         "2) 补充自然的过渡与衔接，让前后读起来像一篇完整的故事，而不是逐句罗列；\n"
-        "3) 可对措辞做润色、补充少量细节，但不要新增重大情节、不要改变故事走向；\n"
-        "4) 在正文里，把对应每条接龙片段的关键短语用 [[编号|关键短语]] 标注——"
-        "编号为该片段在下方列表中的序号（来自第 1 条就写成 [[1|……]]）；"
-        "每条接龙片段至少标注一处、且只标关键短语（几个字到一小句，不要整段都标）；"
-        "开头(创世段)的内容不要标注；\n"
-        "5) 只输出故事正文（1–4 个自然段，可包含上述 [[编号|短语]] 标注），"
+        f"3) 充分扩写：目标篇幅约 {target} 字（约为所有片段原文总长的 4 倍），通过补充环境、"
+        "动作、神态、心理、对话等细节把故事写得饱满耐读；但不得新增重大情节、不得改变故事走向；\n"
+        "4) 高亮标注：把正文中【已经写出的】关键短语，就地用 [[编号|短语]] 直接套起来"
+        "（编号为该片段在下方列表中的序号）。务必注意：被套住的短语在正文里只能出现这一次，"
+        "千万不要在 [[ ]] 前面或后面再重复写一遍同样的文字。每条接龙至少套一处、只套关键短语"
+        "（几个字到一小句）；开头(创世段)不要标注。\n"
+        "   ✅ 正确：我[[1|穿着凉席跳舞]]，试图取暖。\n"
+        "   ❌ 错误：我穿着凉席跳舞[[1|穿着凉席跳舞]]，试图取暖。（短语重复了两次）\n"
+        "5) 只输出故事正文（可分多个自然段，可包含上述 [[编号|短语]] 标注），"
         "不要分点、不要标题、不要任何解释或前后缀。\n\n"
         f"【开头】\n{opening}\n\n"
         f"【接龙片段（按顺序）】\n{seg_text}\n"
@@ -111,7 +167,9 @@ def _deepseek_chat(prompt, max_tokens=2000):
 
 
 def _stitch_deepseek(opening, segments):
-    return _deepseek_chat(_build_prompt(opening, segments), max_tokens=2000)
+    target = (len(opening) + sum(len(s) for s in segments)) * 4
+    max_tokens = min(8000, max(2500, target * 5))   # 给扩写 + 推理留足额度，避免截断/空 content
+    return _dedupe_tags(_deepseek_chat(_build_prompt(opening, segments), max_tokens=max_tokens))
 
 
 def _stitch_claude(opening, segments):
@@ -124,7 +182,7 @@ def _stitch_claude(opening, segments):
         max_tokens=2000,
         messages=[{"role": "user", "content": _build_prompt(opening, segments)}],
     )
-    return "".join(b.text for b in msg.content if b.type == "text").strip()
+    return _dedupe_tags("".join(b.text for b in msg.content if b.type == "text").strip())
 
 
 def _normalize(s):

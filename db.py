@@ -247,15 +247,24 @@ def add_block(story_id, expected_sequence, content, author_id):
     注：Redis REST 无事务，链尾校验为读后写的乐观并发（demo 并发量低，足够）。
     """
     content = content.strip()
-    story = _dict(r("HGETALL", _k("story", story_id)))
+    # 读：故事 + 链尾块 id + 作者昵称（一次往返）
+    s_flat, tail_id, author_name = rpipe([
+        ["HGETALL", _k("story", story_id)],
+        ["LINDEX", _k("story", story_id, "blocks"), -1],
+        ["HGET", _k("user", author_id), "nickname"],
+    ])
+    story = _dict(s_flat)
+    author_name = author_name or ""
     if not story:
         return {"ok": False, "error": "not_found"}
     if story.get("status") != "ongoing":
         return {"ok": False, "error": "finished"}
 
-    tail = get_tail(story_id)
-    tail_seq = tail["sequence"] if tail else -1
-    tail_author = tail["author_id"] if tail else None
+    if tail_id:
+        seq_v, auth_v = rpipe([["HMGET", _k("block", tail_id), "sequence", "author_id"]])[0]
+        tail_seq, tail_author = int(seq_v), int(auth_v)
+    else:
+        tail_seq, tail_author = -1, None
 
     if tail_author is not None and tail_author == author_id:
         return {"ok": False, "error": "consecutive"}
@@ -264,16 +273,27 @@ def add_block(story_id, expected_sequence, content, author_id):
 
     new_seq = tail_seq + 1
     ts = _now()
-    bid = _append_block(story_id, new_seq, content, author_id, _user_name(author_id), ts)
-
+    bid = r("INCR", _k("seq", "block"))
+    # 写块 + 入链 + 作者集合 + 取参与人数（一次往返）
+    wres = rpipe([
+        ["HSET", _k("block", bid),
+         "id", bid, "story_id", story_id, "sequence", new_seq,
+         "raw_content", content, "author_id", author_id, "author_name", author_name,
+         "created_at", ts, "ai_review", ""],
+        ["RPUSH", _k("story", story_id, "blocks"), bid],
+        ["SADD", _k("story", story_id, "authors"), author_id],
+        ["SCARD", _k("story", story_id, "authors")],
+    ])
     finished = new_seq >= MAX_BLOCKS
-    is_new_author = r("SADD", _k("story", story_id, "authors"), author_id)
-    fields = ["updated_at", ts, "status", "finished" if finished else "ongoing", "block_count", new_seq]
-    if is_new_author:
-        fields += ["participant_count", int(story.get("participant_count", 1)) + 1]
-    r("HSET", _k("story", story_id), *fields)
-    r("ZADD", _k("stories"), time.time(), story_id)
-    return {"ok": True, "sequence": new_seq, "finished": finished, "block_id": bid}
+    participant_count = int(wres[3]) if wres[3] is not None else int(story.get("participant_count", 1))
+    # 更新故事聚合字段 + 重排（一次往返）
+    rpipe([
+        ["HSET", _k("story", story_id),
+         "updated_at", ts, "status", "finished" if finished else "ongoing",
+         "block_count", new_seq, "participant_count", participant_count],
+        ["ZADD", _k("stories"), time.time(), story_id],
+    ])
+    return {"ok": True, "sequence": new_seq, "finished": finished, "block_id": int(bid)}
 
 
 # ---------- 评价（好评 / 差评） ----------

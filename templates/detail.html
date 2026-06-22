@@ -17,6 +17,22 @@
   var ENGINE = "{{ ai_provider }}";
   var root = document.getElementById('detail');
 
+  // 来自发布页的"接龙载荷"：有则立即播放聚合动画，并在动画期间异步落盘 + 生成
+  var relayPayload = null;
+  try {
+    var _raw = sessionStorage.getItem('gs_relay');
+    if (_raw) {
+      var _p = JSON.parse(_raw);
+      if (_p && String(_p.sid) === SID) { relayPayload = _p; sessionStorage.removeItem('gs_relay'); root.innerHTML = ''; }
+    }
+  } catch (e) {}
+
+  var RELAY_ERR = {
+    finished: '故事已完结，无法接龙', consecutive: '不能连续接龙，请等待其他人接龙后再继续',
+    conflict: '已有新的接龙，故事已更新，请基于最新内容重新接龙', length: '接龙内容长度不符',
+    not_found: '故事不存在', login: '请先登录'
+  };
+
   function el(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -97,7 +113,7 @@
     t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash');
   }
 
-  function render(d) {
+  function render(d, skipAiPoll) {
     var s = d.story;
     document.title = s.title + ' · Soul Good Story';
     root.innerHTML = '';
@@ -116,6 +132,7 @@
 
     // AI 串联正文
     var box = el('section', 'ai-box');
+    if (s.ai_status === 'pending') box.classList.add('is-generating');   // 边框脉冲，强化"生成中"
     var tag = el('div', 'ai-tag', '✨ 本故事由 ' + ENGINE + ' 串联生成');
     var pend = el('span', 'ai-pending', '生成中…');
     pend.id = 'ai-pending';
@@ -140,6 +157,17 @@
     } else {
       var a2 = el('a', 'relay-entry', '接下去会发生什么？点此接龙（≤ ' + d.relay_max + ' 字）');
       a2.href = '/publish?story_id=' + s.id;
+      a2.addEventListener('click', function () {   // 把上文写入缓存，发布页秒显（随后 API 刷新）
+        try {
+          sessionStorage.setItem('gs_ctx_' + s.id, JSON.stringify({
+            ok: true, logged_in: true,
+            story: { id: s.id, title: s.title, status: s.status },
+            blocks: d.blocks.map(function (b) { return { sequence: b.sequence, raw_content: b.raw_content }; }),
+            tail_sequence: d.blocks.length ? d.blocks[d.blocks.length - 1].sequence : 0,
+            consecutive: false, max_relay: d.relay_max
+          }));
+        } catch (e) {}
+      });
       root.appendChild(a2);
     }
 
@@ -164,7 +192,7 @@
     sec.appendChild(ol);
     root.appendChild(sec);
 
-    if (s.ai_status === 'pending') pollAi();
+    if (!skipAiPoll && s.ai_status === 'pending') pollAi();
     pollReviews();
   }
 
@@ -175,6 +203,7 @@
         clearInterval(timer);
         renderAi(document.getElementById('ai-content'), dd.paragraphs);
         var pe = document.getElementById('ai-pending'); if (pe) pe.hidden = true;
+        var ab = document.querySelector('.ai-box'); if (ab) ab.classList.remove('is-generating');
       }).catch(function () {});
     }, 2000);
   }
@@ -221,16 +250,165 @@
     }).finally(function () { btn.disabled = false; });
   });
 
-  // 异步拉取数据并渲染
-  fetch('/story/' + SID + '/data').then(function (r) {
-    if (!r.ok) throw 0;
-    return r.json();
-  }).then(function (d) {
-    if (!d.ok) throw 0;
-    render(d);
-  }).catch(function () {
-    root.innerHTML = '<p class="subtitle">故事不存在或加载失败。<a class="link" href="' + INDEX_URL + '">返回首页</a></p>';
-  });
+  // ===== 提交接龙后：星球聚合（方案一）→ 详情从核心生长 =====
+  function tf2(x, y, s) {
+    return 'translate(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px) scale(' + (s == null ? 1 : s).toFixed(3) + ')';
+  }
+  function orbitR() {
+    return Math.max(118, Math.min(window.innerWidth, window.innerHeight) * 0.24);
+  }
+  function buildOverlay(blocks) {
+    var ov = el('div', 'gs-anim');
+    var core = el('div', 'gs-core');
+    ov.appendChild(core);
+    var frags = blocks.map(function (b, i) {
+      var f = el('div', 'gs-frag');
+      var mv = el('div', 'gs-fragMove');
+      var chip = el('div', 'gs-chip' + (i === blocks.length - 1 ? ' new' : ''));
+      chip.textContent = b.raw_content;
+      mv.appendChild(chip); f.appendChild(mv); ov.appendChild(f);
+      return { mv: mv };
+    });
+    var status = el('div', 'gs-status');
+    status.appendChild(el('span', 'gs-dot'));
+    var sp = el('span', null, '✨ AI 正在把碎片串成星河…');
+    status.appendChild(sp);
+    ov.appendChild(status);
+    document.body.appendChild(ov);
+    return { ov: ov, core: core, status: status, sp: sp, frags: frags };
+  }
+  function startOrbit(refs, n) {
+    var R = orbitR();
+    refs.frags.forEach(function (fr, i) {
+      var a0 = i / n * Math.PI * 2 - Math.PI / 2;
+      var rad = R + (i % 3) * 22;
+      var rx = Math.cos(a0) * rad, ry = Math.sin(a0) * rad * 0.74;
+      var from = (i === n - 1) ? tf2(0, window.innerHeight * 0.32, 0.85) : tf2(rx * 1.4, ry * 1.4, 0.8);
+      var intro = fr.mv.animate([{ transform: from, opacity: 0 }, { transform: tf2(rx, ry, 1), opacity: 1 }],
+        { duration: 620, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' });
+      intro.finished.then(function () {
+        var kf = [];
+        for (var s = 0; s <= 36; s++) {
+          var t = s / 36, ang = a0 + t * Math.PI * 2, br = rad * (1 + 0.04 * Math.sin(t * Math.PI * 2 + i));
+          kf.push({ transform: tf2(Math.cos(ang) * br, Math.sin(ang) * br * 0.74, 1) });
+        }
+        fr._loop = fr.mv.animate(kf, { duration: 7000, iterations: Infinity, easing: 'linear' });
+      }).catch(function () {});
+    });
+    refs.core.animate([{ transform: 'translate(-50%,-50%) scale(0)', opacity: 0 }, { transform: 'translate(-50%,-50%) scale(.55)', opacity: .85 }],
+      { duration: 700, fill: 'forwards' });
+    refs._pulse = refs.core.animate([{ transform: 'translate(-50%,-50%) scale(.52)' }, { transform: 'translate(-50%,-50%) scale(.64)' }, { transform: 'translate(-50%,-50%) scale(.52)' }],
+      { duration: 1800, delay: 700, iterations: Infinity, easing: 'ease-in-out' });
+    setTimeout(function () { refs.status.classList.add('show'); }, 200);
+  }
+  function aggFinale(refs, onContent) {
+    refs.sp.textContent = '✓ 已凝聚成故事';
+    refs.frags.forEach(function (fr) {
+      var cur = getComputedStyle(fr.mv).transform;
+      if (fr._loop) fr._loop.cancel();
+      fr.mv.animate([{ transform: cur, opacity: 1 }, { transform: 'translate(0px,0px) scale(.2)', opacity: 0 }],
+        { duration: 720, easing: 'cubic-bezier(.5,0,.85,.3)', fill: 'forwards' });
+    });
+    if (refs._pulse) refs._pulse.cancel();
+    refs.core.animate([{ transform: 'translate(-50%,-50%) scale(.55)', opacity: .9 },
+      { transform: 'translate(-50%,-50%) scale(2.4)', opacity: 1, offset: .6 },
+      { transform: 'translate(-50%,-50%) scale(3.1)', opacity: 0 }], { duration: 820, easing: 'ease-out', fill: 'forwards' });
+    for (var k = 0; k < 2; k++) {
+      var ring = el('div', 'gs-ring'); refs.ov.appendChild(ring);
+      ring.animate([{ transform: 'translate(-50%,-50%) scale(.3)', opacity: .9 }, { transform: 'translate(-50%,-50%) scale(8)', opacity: 0 }],
+        { duration: 950, delay: k * 150, easing: 'ease-out', fill: 'forwards' });
+    }
+    onContent();
+  }
+  function playRelay(payload) {
+    // 立即起动画（不依赖任何请求）：用发布页带来的碎片 + 你这句
+    var ctx = (payload.frags || []).slice(-6);
+    var blocks = ctx.map(function (t) { return { raw_content: t }; });
+    blocks.push({ raw_content: payload.text });
+    var refs = buildOverlay(blocks);
+    startOrbit(refs, blocks.length);
+    var startT = Date.now(), MIN = 2000, GEN_CAP = 5000;
+    var finaled = false, genDone = false, genParas = null, relayDone = false, capWanted = false;
+
+    function applyParas(paras) {   // 生成完成后就地更新正文 + 去掉"生成中"脉冲
+      var box = document.getElementById('ai-content'); if (box) renderAi(box, paras);
+      var pe = document.getElementById('ai-pending'); if (pe) pe.hidden = true;
+      var ab = document.querySelector('.ai-box'); if (ab) ab.classList.remove('is-generating');
+    }
+    function setGenerating() {   // 强制"生成中"视觉（脉冲 + 文案），不依赖 /data 状态
+      var ab = document.querySelector('.ai-box'); if (ab) ab.classList.add('is-generating');
+      var pe = document.getElementById('ai-pending'); if (pe) pe.hidden = false;
+    }
+    function doFinale(d) {   // 收尾：碎片入核 → 详情从核心生长
+      if (finaled) return; finaled = true;
+      if (capTimer) clearTimeout(capTimer);
+      if (!d || !d.ok) { try { refs.ov.remove(); } catch (e) {} location.reload(); return; }
+      setTimeout(function () {
+        aggFinale(refs, function () {
+          render(d, true);                              // 跳过 render 内部轮询，正文更新统一由本函数负责
+          if (genDone && genParas) applyParas(genParas);  // 已生成完 → 填新正文、停脉冲
+          else setGenerating();                           // DeepSeek 未返回 → 上一次正文 + 脉冲
+          root.animate([{ opacity: 0, transform: 'scale(.16)', filter: 'blur(8px)' }, { opacity: 1, transform: 'scale(1)', filter: 'blur(0)' }],
+            { duration: 800, easing: 'cubic-bezier(.2,.8,.2,1)' });
+          refs.ov.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 520, delay: 240, fill: 'forwards' });
+          setTimeout(function () { refs.ov.remove(); }, 820);
+        });
+      }, Math.max(0, MIN - (Date.now() - startT)));
+    }
+    function tryFallback() {   // 5s 到 + 已落盘 + 未生成完 → 用当前数据先回详情（带脉冲），正文随后补
+      if (finaled || genDone || !relayDone) return;
+      fetch('/story/' + SID + '/data').then(function (r) { return r.json(); }).then(doFinale).catch(function () { doFinale(null); });
+    }
+    function fail(msg) {
+      if (finaled) return; finaled = true;
+      if (capTimer) clearTimeout(capTimer);
+      try { refs.ov.remove(); } catch (e) {}
+      fetch('/story/' + SID + '/data').then(function (r) { return r.json(); })
+        .then(function (d) { if (d && d.ok) render(d); if (msg) alert(msg); })
+        .catch(function () { root.innerHTML = '<p class="subtitle">加载失败，<a class="link" href="' + INDEX_URL + '">返回首页</a></p>'; });
+    }
+    function watchGen() {   // 单一生成来源：首个 /ai_status 同步触发 DeepSeek，完成时返回 idle
+      fetch('/story/' + SID + '/ai_status').then(function (r) { return r.json(); }).then(function (s) {
+        if (s.status === 'idle') {
+          genDone = true; genParas = s.paragraphs;
+          if (finaled) applyParas(s.paragraphs);   // 已兜底回详情 → 就地把正文补上
+          else { if (capTimer) clearTimeout(capTimer); fetch('/story/' + SID + '/data').then(function (r) { return r.json(); }).then(doFinale).catch(function () { doFinale(null); }); }
+        } else { setTimeout(watchGen, 1200); }
+      }).catch(function () { if (!genDone) setTimeout(watchGen, 1500); });
+    }
+
+    // 5s 兜底（从动画开始计时）：到点若已落盘且未生成完，则先回详情页（带脉冲）
+    var capTimer = setTimeout(function () { capWanted = true; tryFallback(); }, GEN_CAP);
+
+    // 异步：先落盘接龙；成功后开生成监听；若 5s 已先到则落盘后立即兜底
+    var body = 'content=' + encodeURIComponent(payload.text) +
+      '&expected_sequence=' + encodeURIComponent(payload.expected == null ? '' : payload.expected);
+    fetch('/story/' + SID + '/relay', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body })
+      .then(function (r) { if (r.status === 401) { location.href = LOGIN_URL; return null; } return r.json(); })
+      .then(function (res) {
+        if (!res) return;
+        if (!res.ok) { fail(RELAY_ERR[res.error] || '接龙失败'); return; }
+        relayDone = true;
+        watchGen();
+        if (capWanted) tryFallback();
+      })
+      .catch(function () { fail('网络异常，请重试'); });
+  }
+
+  // 入口：刚接龙（带载荷）→ 立即播放聚合动画；否则正常渲染
+  if (relayPayload) {
+    playRelay(relayPayload);
+  } else {
+    fetch('/story/' + SID + '/data').then(function (r) {
+      if (!r.ok) throw 0;
+      return r.json();
+    }).then(function (d) {
+      if (!d.ok) throw 0;
+      render(d);
+    }).catch(function () {
+      root.innerHTML = '<p class="subtitle">故事不存在或加载失败。<a class="link" href="' + INDEX_URL + '">返回首页</a></p>';
+    });
+  }
 })();
 </script>
 {% endblock %}

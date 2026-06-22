@@ -103,11 +103,22 @@ def _generate_review(block_id):
 
 @app.route("/")
 def index():
-    stories = db.list_stories()
-    for s in stories:
+    # 只渲染壳；故事列表由前端异步拉 /api/stories（配合本地缓存，回首页秒显）
+    return render_template("index.html", user=current_user())
+
+
+@app.route("/api/stories")
+def api_stories():
+    out = []
+    for s in db.list_stories():
         plain = _plain(s["ai_content"])
-        s["summary"] = plain[:60] + ("…" if len(plain) > 60 else "")
-    return render_template("index.html", stories=stories, user=current_user())
+        out.append({
+            "id": s["id"], "title": s["title"], "creator_name": s["creator_name"],
+            "status": s["status"], "block_count": s["block_count"],
+            "participant_count": s["participant_count"], "updated_at": s["updated_at"],
+            "summary": plain[:60] + ("…" if len(plain) > 60 else ""),
+        })
+    return {"stories": out}
 
 
 # ---------- 登录 / 退出 ----------
@@ -201,6 +212,45 @@ def ai_status(story_id):
     return {"status": story["ai_status"], "paragraphs": paragraphs}
 
 
+# ---------- 接龙（AJAX：先落盘，聚合动画期间再异步生成） ----------
+
+@app.route("/story/<int:story_id>/relay", methods=["POST"])
+def relay(story_id):
+    user = current_user()
+    if not user:
+        return {"ok": False, "error": "login"}, 401
+    content = (request.form.get("content") or "").strip()
+    if not content or len(content) > db.MAX_RELAY:
+        return {"ok": False, "error": "length"}
+    expected = request.form.get("expected_sequence", type=int)
+    res = db.add_block(story_id, expected, content, user["id"])
+    if not res["ok"]:
+        return {"ok": False, "error": res["error"]}
+    kick_ai(story_id)  # 仅标记待生成；正文/辣评在前端轮询时按需生成
+    return {"ok": True, "sequence": res["sequence"], "finished": res.get("finished", False)}
+
+
+# ---------- 接龙上文（AJAX：发布页异步拉取，秒进） ----------
+
+@app.route("/api/relay-context/<int:story_id>")
+def api_relay_context(story_id):
+    story = db.get_story(story_id)
+    if not story:
+        return {"ok": False}, 404
+    blocks = db.get_blocks(story_id)
+    user = current_user()
+    tail = blocks[-1] if blocks else None
+    return {
+        "ok": True,
+        "logged_in": bool(user),
+        "story": {"id": story["id"], "title": story["title"], "status": story["status"]},
+        "blocks": [{"sequence": b["sequence"], "raw_content": b["raw_content"]} for b in blocks],
+        "tail_sequence": tail["sequence"] if tail else 0,
+        "consecutive": bool(user and tail and tail["author_id"] == user["id"]),
+        "max_relay": db.MAX_RELAY,
+    }
+
+
 # ---------- 发布页（发起 / 接龙 双模式） ----------
 
 @app.route("/publish", methods=["GET", "POST"])
@@ -236,24 +286,10 @@ def publish():
         flash("发布成功！")
         return redirect(url_for("story_detail", story_id=new_id))
 
-    # GET
-    if story_id:  # 接龙模式：进入前校验
-        story = db.get_story(story_id)
-        if not story:
-            abort(404)
-        if story["status"] != "ongoing":
-            flash("故事已完结，无法接龙")
-            return redirect(url_for("story_detail", story_id=story_id))
-        blocks = db.get_blocks(story_id)
-        tail = blocks[-1] if blocks else None
-        if tail and tail["author_id"] == user["id"]:
-            flash("不能连续接龙，请等待其他人接龙后再继续")
-            return redirect(url_for("story_detail", story_id=story_id))
-        return render_template(
-            "publish.html", mode="relay", story=story, tail=tail, blocks=blocks,
-            user=user, maxlen=db.MAX_RELAY,
-        )
-
+    # GET：只渲染壳（不读 Redis，秒进）；接龙上文/校验由前端异步拉 /api/relay-context
+    if story_id:
+        return render_template("publish.html", mode="relay", story_id=story_id,
+                               user=user, maxlen=db.MAX_RELAY)
     return render_template("publish.html", mode="new", user=user, maxlen=db.MAX_OPENING)
 
 

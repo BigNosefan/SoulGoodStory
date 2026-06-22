@@ -1,37 +1,24 @@
 {% extends "base.html" %}
 {% block title %}{{ '接龙' if mode == 'relay' else '发布故事' }} · Soul Good Story{% endblock %}
 {% block content %}
-  <a class="back" href="{{ url_for('story_detail', story_id=story.id) if mode == 'relay' else url_for('index') }}">← 返回</a>
+  {% if mode == 'relay' %}
+    <a class="back" href="{{ url_for('story_detail', story_id=story_id) }}">← 返回</a>
+  {% else %}
+    <a class="back" href="{{ url_for('index') }}">← 返回</a>
+  {% endif %}
   <h1 class="page-title">{{ '接龙' if mode == 'relay' else '发布新故事' }}</h1>
 
   {% if mode == 'relay' %}
-    <div class="relay-context">
+    <div class="relay-context" id="relay-context">
       <div class="ctx-label">你正在接龙</div>
-      <div class="ctx-title">{{ story.title }}</div>
-
-      {% if blocks %}
-        {% set total = blocks | length %}
-        {% set hide_before = total - 5 %}
-        <div class="ctx-label" style="margin-top: 12px;">接龙上文 · 共 {{ total }} 条</div>
-        <ol class="ctx-list" id="ctx-list">
-          {% for b in blocks %}
-            <li class="ctx-item{% if loop.index0 < hide_before %} ctx-hidden{% endif %}">
-              <span class="ctx-seq">{{ '开头' if b.sequence == 0 else b.sequence }}</span>
-              <span class="ctx-text">{{ b.raw_content }}</span>
-            </li>
-          {% endfor %}
-        </ol>
-        {% if total > 5 %}
-          <button type="button" class="ctx-toggle" id="ctx-toggle" data-expanded="0">▾ 展开全部 {{ total }} 条</button>
-        {% endif %}
-      {% endif %}
+      <div class="ctx-title">加载中…</div>
     </div>
   {% endif %}
 
   <form class="publish-form" method="post" action="{{ url_for('publish') }}">
     {% if mode == 'relay' %}
-      <input type="hidden" name="story_id" value="{{ story.id }}">
-      <input type="hidden" name="expected_sequence" value="{{ tail.sequence if tail else 0 }}">
+      <input type="hidden" name="story_id" value="{{ story_id }}">
+      <input type="hidden" name="expected_sequence" id="expected_sequence" value="0">
     {% endif %}
     <textarea id="content" name="content" maxlength="{{ maxlen }}" rows="4"
       placeholder="{{ '接下去会发生什么？（≤ %d 字）'|format(maxlen) if mode == 'relay' else '写下你的故事开头……（≤ %d 字）'|format(maxlen) }}"
@@ -40,20 +27,79 @@
     <button class="btn-primary" type="submit">{{ '提交接龙' if mode == 'relay' else '发布' }}</button>
   </form>
 
-  {% if mode == 'relay' and blocks and blocks | length > 5 %}
+  {% if mode == 'relay' %}
   <script>
     (function () {
-      var t = document.getElementById('ctx-toggle');
-      if (!t) return;
-      t.addEventListener('click', function () {
-        var items = Array.prototype.slice.call(document.querySelectorAll('#ctx-list .ctx-item'));
-        var hideBefore = items.length - 5;
-        var expanded = t.dataset.expanded === '1';
-        items.forEach(function (li, i) {
-          if (i < hideBefore) li.classList.toggle('ctx-hidden', expanded);  // 已展开→重新折叠；已折叠→展开
+      var SID = "{{ story_id }}";
+      var MAX = {{ maxlen }};
+      var LOGIN_URL = "{{ url_for('login') }}";
+      var ctxBox = document.getElementById('relay-context');
+      var expEl = document.getElementById('expected_sequence');
+
+      function esc(t){ var d = document.createElement('div'); d.textContent = t == null ? '' : t; return d.innerHTML; }
+
+      function renderCtx(c){
+        if (!c) return;
+        var st = c.story || {};
+        var blocks = c.blocks || [];
+        if (c.tail_sequence != null && expEl) expEl.value = c.tail_sequence;
+        var total = blocks.length, hideBefore = Math.max(0, total - 5);
+        var html = '<div class="ctx-label">你正在接龙</div><div class="ctx-title">' + esc(st.title) + '</div>';
+        if (total) {
+          html += '<div class="ctx-label" style="margin-top:12px;">接龙上文 · 共 ' + total + ' 条</div><ol class="ctx-list" id="ctx-list">';
+          blocks.forEach(function (b, i) {
+            html += '<li class="ctx-item' + (i < hideBefore ? ' ctx-hidden' : '') + '">' +
+              '<span class="ctx-seq">' + (b.sequence === 0 ? '开头' : b.sequence) + '</span>' +
+              '<span class="ctx-text">' + esc(b.raw_content) + '</span></li>';
+          });
+          html += '</ol>';
+          if (total > 5) html += '<button type="button" class="ctx-toggle" id="ctx-toggle" data-expanded="0">▾ 展开全部 ' + total + ' 条</button>';
+        }
+        if (c.consecutive) html += '<div style="color:#ffb86b;font-size:13px;margin-top:10px">⚠️ 你是上一句的作者，需等他人接龙后才能继续。</div>';
+        ctxBox.innerHTML = html;
+        wireToggle();
+      }
+      function wireToggle(){
+        var t = document.getElementById('ctx-toggle'); if (!t) return;
+        t.addEventListener('click', function () {
+          var items = Array.prototype.slice.call(document.querySelectorAll('#ctx-list .ctx-item'));
+          var hideBefore = Math.max(0, items.length - 5);
+          var expanded = t.dataset.expanded === '1';
+          items.forEach(function (li, i) { if (i < hideBefore) li.classList.toggle('ctx-hidden', expanded); });
+          t.dataset.expanded = expanded ? '0' : '1';
+          t.textContent = expanded ? ('▾ 展开全部 ' + items.length + ' 条') : '▴ 收起';
         });
-        t.dataset.expanded = expanded ? '0' : '1';
-        t.textContent = expanded ? ('▾ 展开全部 ' + items.length + ' 条') : '▴ 收起';
+      }
+
+      // 1) 用从详情页带来的 / 本地缓存的上文秒显
+      var cached = null;
+      try { cached = JSON.parse(sessionStorage.getItem('gs_ctx_' + SID) || 'null'); } catch (e) {}
+      if (cached) renderCtx(cached);
+
+      // 2) 异步拉最新上文并更新 + 缓存
+      fetch('/api/relay-context/' + SID).then(function (r) { return r.json(); }).then(function (c) {
+        if (!c || !c.ok) return;
+        if (c.logged_in === false) { location.href = LOGIN_URL; return; }
+        if (c.story && c.story.status !== 'ongoing') { location.href = '/story/' + SID; return; }
+        renderCtx(c);
+        try { sessionStorage.setItem('gs_ctx_' + SID, JSON.stringify(c)); } catch (e) {}
+      }).catch(function () {});
+
+      // 提交：拦截 → 暂存碎片与本句 → 暗场即刻跳详情页（落盘 + 生成在详情页动画期间异步进行）
+      var form = document.querySelector('.publish-form');
+      form.addEventListener('submit', function (ev) {
+        var ta = document.getElementById('content');
+        var v = ((ta && ta.value) || '').trim();
+        if (!v || v.length > MAX) return;
+        ev.preventDefault();
+        var frags = Array.prototype.slice.call(document.querySelectorAll('#ctx-list .ctx-text')).map(function (e) { return e.textContent; });
+        var exp = expEl ? expEl.value : '';
+        try {
+          sessionStorage.setItem('gs_relay', JSON.stringify({ sid: SID, expected: exp === '' ? null : Number(exp), text: v, frags: frags }));
+        } catch (e) {}
+        var ov = document.createElement('div'); ov.className = 'gs-fade'; document.body.appendChild(ov);
+        requestAnimationFrame(function () { ov.classList.add('on'); });
+        setTimeout(function () { location.href = '/story/' + SID; }, 180);
       });
     })();
   </script>

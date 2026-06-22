@@ -6,31 +6,48 @@
     <p class="hero-sub">一句话起笔，一群人成书 — 让每一次灵光乍现，都成为众人共同书写的好故事。</p>
   </section>
 
-  {% if stories %}
-    <ul class="story-list">
-      {% for s in stories %}
-        <li class="card">
-          <a class="card-link" href="{{ url_for('story_detail', story_id=s.id) }}">
-            <div class="card-head">
-              <span class="card-title">{{ s.title }}</span>
-              <span class="badge {{ 'badge-done' if s.status == 'finished' else 'badge-live' }}">
-                {{ '已完结' if s.status == 'finished' else '进行中' }}
-              </span>
-            </div>
-            <p class="card-summary">{{ s.summary }}</p>
-            <div class="card-meta">
-              <span>🧩 接龙 {{ s.block_count or 0 }}</span>
-              <span>👥 {{ s.participant_count or 0 }} 人</span>
-              <span>✍️ {{ s.creator_name }}</span>
-              <span>🕘 {{ s.updated_at }}</span>
-            </div>
-          </a>
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <div class="empty">还没有故事，来发布第一个开头吧！</div>
-  {% endif %}
+  <div id="story-list"></div>
 
   <a class="fab" href="{{ url_for('publish') }}" title="发布故事">＋ 发布故事</a>
+
+<script>
+(function () {
+  var host = document.getElementById('story-list');
+  var CACHE = 'gs_stories_cache';
+
+  function esc(t){ var d = document.createElement('div'); d.textContent = t == null ? '' : t; return d.innerHTML; }
+  function card(s){
+    var done = s.status === 'finished';
+    return '<li class="card"><a class="card-link" href="/story/' + s.id + '">' +
+      '<div class="card-head"><span class="card-title">' + esc(s.title) + '</span>' +
+      '<span class="badge ' + (done ? 'badge-done' : 'badge-live') + '">' + (done ? '已完结' : '进行中') + '</span></div>' +
+      '<p class="card-summary">' + esc(s.summary) + '</p>' +
+      '<div class="card-meta"><span>🧩 接龙 ' + (s.block_count || 0) + '</span>' +
+      '<span>👥 ' + (s.participant_count || 0) + ' 人</span>' +
+      '<span>✍️ ' + esc(s.creator_name) + '</span>' +
+      '<span>🕘 ' + esc(s.updated_at) + '</span></div></a></li>';
+  }
+  function renderList(stories){
+    if (!stories || !stories.length) { host.innerHTML = '<div class="empty">还没有故事，来发布第一个开头吧！</div>'; return; }
+    host.innerHTML = '<ul class="story-list">' + stories.map(card).join('') + '</ul>';
+  }
+
+  // 1) 本地缓存秒显（无缓存则先放骨架）
+  var cached = null;
+  try { cached = JSON.parse(localStorage.getItem(CACHE) || 'null'); } catch (e) {}
+  if (cached && cached.length) renderList(cached);
+  else host.innerHTML = '<ul class="story-list"><li class="card"><div class="skeleton" style="height:64px"></div></li>'
+    + '<li class="card"><div class="skeleton" style="height:64px"></div></li>'
+    + '<li class="card"><div class="skeleton" style="height:64px"></div></li></ul>';
+
+  // 2) 异步拉最新并更新 + 回写缓存
+  fetch('/api/stories').then(function (r) { return r.json(); }).then(function (d) {
+    var list = (d && d.stories) || [];
+    renderList(list);
+    try { localStorage.setItem(CACHE, JSON.stringify(list)); } catch (e) {}
+  }).catch(function () {
+    if (!(cached && cached.length)) host.innerHTML = '<div class="empty">加载失败，请刷新重试。</div>';
+  });
+})();
+</script>
 {% endblock %}
