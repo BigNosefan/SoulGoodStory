@@ -130,6 +130,19 @@
     meta.appendChild(el('span', null, '✍️ 发起人 ' + s.creator_name));
     root.appendChild(meta);
 
+    // 视频位：故事有 video_url 才显示，否则维持原逻辑
+    if (s.video_url) {
+      var vwrap = el('div', 'story-video');
+      var v = document.createElement('video');
+      v.src = s.video_url;
+      v.controls = true;
+      v.preload = 'metadata';
+      v.setAttribute('playsinline', '');
+      v.setAttribute('webkit-playsinline', '');
+      vwrap.appendChild(v);
+      root.appendChild(vwrap);
+    }
+
     // AI 串联正文
     var box = el('section', 'ai-box');
     if (s.ai_status === 'pending') box.classList.add('is-generating');   // 边框脉冲，强化"生成中"

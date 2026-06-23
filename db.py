@@ -103,6 +103,7 @@ def _story_dict(d):
         "ai_content": d.get("ai_content", ""),
         "ai_status": d.get("ai_status", "idle"),
         "ai_source": d.get("ai_source", ""),   # deepseek / claude / mock（空=旧数据，视为已就绪不重试）
+        "video_url": d.get("video_url", ""),   # 可选：详情页视频，留空则不显示
         "block_count": int(d.get("block_count", 0)),
         "participant_count": int(d.get("participant_count", 0)),
         "created_at": d.get("created_at", ""),

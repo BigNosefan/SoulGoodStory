@@ -242,6 +242,10 @@ body::after {
 /* 生成中占位文案也呼吸一下 */
 .ai-box.is-generating .ai-placeholder { animation: gs-pulse 1.4s ease-in-out infinite; }
 
+/* 详情页视频位（故事配置了 video_url 时显示） */
+.story-video { margin: 6px 0 18px; border-radius: 14px; overflow: hidden; border: 1px solid rgba(255,255,255,.1); background: #000; box-shadow: 0 12px 34px rgba(0,0,0,.45); }
+.story-video video { display: block; width: 100%; max-height: 460px; background: #000; outline: none; }
+
 /* 接龙入口 */
 .relay-entry {
   display: block; width: 100%; text-align: left; background: var(--grad-soft); color: var(--cyan);

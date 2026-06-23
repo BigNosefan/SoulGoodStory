@@ -192,6 +192,7 @@ def story_data(story_id):
             "id": story["id"], "title": story["title"], "status": story["status"],
             "block_count": story["block_count"], "participant_count": story["participant_count"],
             "creator_name": story["creator_name"], "ai_status": story["ai_status"],
+            "video_url": story["video_url"],
             "ai_paragraphs": [p for p in (story["ai_content"] or "").split("\n\n") if p],
         },
         "blocks": block_list,
